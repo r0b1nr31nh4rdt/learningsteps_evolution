@@ -1,0 +1,329 @@
+# Own area in the cluster for everything that belongs to the app.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: learningsteps
+---
+# Identity of the app pods. The name must match the subject of the
+# federated credential in Terraform (keyvault.tf) exactly.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: learningsteps-app
+  namespace: learningsteps
+  annotations:
+    # Filled in by deploy.sh from terraform output
+    azure.workload.identity/client-id: "${APP_IDENTITY_CLIENT_ID}"
+# The app never talks to the Kubernetes API, so it gets no API token.
+automountServiceAccountToken: false
+---
+# The namespace's default ServiceAccount (Kubernetes creates it automatically).
+# No API token for pods that run without their own ServiceAccount either.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: learningsteps
+automountServiceAccountToken: false
+---
+# Tells the Key Vault CSI driver which secret to fetch, from which vault and
+# with which identity. The driver only acts when a pod mounts a volume that
+# refers to this class (see the Deployment).
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: learningsteps-kv
+  namespace: learningsteps
+spec:
+  provider: azure
+  parameters:
+    # Workload identity: the driver signs in as the app identity with the
+    # token of the pod's ServiceAccount. No password involved.
+    clientID: "${APP_IDENTITY_CLIENT_ID}"
+    keyvaultName: "${KEY_VAULT_NAME}"
+    tenantId: "${TENANT_ID}"
+    # List of Key Vault objects to fetch. The driver expects this as a
+    # YAML text block, hence the "|" lines.
+    objects: |
+      array:
+        - |
+          objectName: database-url
+          objectType: secret
+  # Additionally copy the value into a Kubernetes Secret, so the Deployment
+  # can pass it to the container as the environment variable DATABASE_URL.
+  secretObjects:
+    - secretName: db-credentials
+      type: Opaque
+      data:
+        - objectName: database-url
+          key: DATABASE_URL
+---
+# Settings the app reads as environment variables. No secrets here: this file
+# is in Git and the values are readable in the cluster.
+apiVersion: v1
+kind: ConfigMap
+metadata:
+  name: app-config
+  namespace: learningsteps
+data:
+  LOG_LEVEL: "INFO"
+  # Connections per pod. Coupled with maxReplicas of the HPA (6) and the
+  # database size: 6 x 5 = 30 must stay below ~40 (B1ms: 50 minus 10 reserved).
+  DB_POOL_MAX_SIZE: "5"
+---
+# Runs the API: which image, how many copies, how the secret gets in.
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: learningsteps-api
+  namespace: learningsteps
+spec:
+  # No "replicas" here: the HorizontalPodAutoscaler below owns the number of
+  # pods. A fixed value would reset it on every kubectl apply.
+  # Rollout: stop one old pod first, then start a new one. One node is almost
+  # full with the NGINX ingress pods; with "new pod first" the new pod needed
+  # room that only the old pod could free, and the rollout got stuck.
+  # Trade-off: during a rollout one pod fewer is serving.
+  strategy:
+    type: RollingUpdate
+    rollingUpdate:
+      maxSurge: 0
+      maxUnavailable: 1
+  # Which pods belong to this Deployment. Must match the labels below.
+  selector:
+    matchLabels:
+      app: learningsteps-api
+  # Blueprint for every pod.
+  template:
+    metadata:
+      labels:
+        app: learningsteps-api
+        # Lets the workload identity webhook prepare the pod for Azure sign-in.
+        azure.workload.identity/use: "true"
+      annotations:
+        # Hash of the ConfigMap above, filled in by deploy.sh. When the
+        # ConfigMap changes, the hash changes, and with it the pod template,
+        # so Kubernetes starts new pods that read the new values.
+        checksum/app-config: "${CONFIG_HASH}"
+    spec:
+      serviceAccountName: learningsteps-app
+      # Spread the pods across nodes (VMs): at most 1 pod difference between
+      # nodes. If one VM fails, the pods on the other one keep serving.
+      # DoNotSchedule: enforced. A new pod rather waits (Pending) than lands
+      # on the same node. Works together with the rollout strategy above
+      # (old pod first): the new pod only waits a few seconds until the old
+      # one is gone, see README "Horizontal Pod Autoscaler".
+      topologySpreadConstraints:
+        - maxSkew: 1
+          topologyKey: kubernetes.io/hostname
+          whenUnsatisfiable: DoNotSchedule
+          labelSelector:
+            matchLabels:
+              app: learningsteps-api
+          # Count only pods of the same version. Without this, the old pods
+          # still running during a rolling update are counted too, and the
+          # new pods can all end up on one node once the old ones are gone.
+          matchLabelKeys:
+            - pod-template-hash
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 10001          # the user created in the Dockerfile
+        seccompProfile:
+          type: RuntimeDefault    # blocks rarely needed, risky system calls
+      containers:
+        - name: api
+          image: "${ACR_LOGIN_SERVER}/learningsteps-api:${IMAGE_TAG}"
+          ports:
+            - containerPort: 8000
+          # All keys of the ConfigMap become environment variables.
+          envFrom:
+            - configMapRef:
+                name: app-config
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials     # created by the CSI driver
+                  key: DATABASE_URL
+          # Without this mount the CSI driver never runs, db-credentials is
+          # never created and the pod does not start.
+          volumeMounts:
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          # Is the pod ready for traffic? Until then the Service skips it.
+          readinessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            periodSeconds: 10
+          # Is the app still alive? If not, Kubernetes restarts the container.
+          livenessProbe:
+            httpGet:
+              path: /health
+              port: 8000
+            initialDelaySeconds: 10
+            periodSeconds: 20
+          # requests: reserved on the node. limits: upper bound.
+          resources:
+            requests:
+              cpu: 100m                    # 0.1 CPU core
+              memory: 128Mi
+            limits:
+              cpu: 500m
+              memory: 256Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: learningsteps-kv
+---
+# Scales the number of API pods with the CPU load.
+apiVersion: autoscaling/v2
+kind: HorizontalPodAutoscaler
+metadata:
+  name: learningsteps-api
+  namespace: learningsteps
+spec:
+  scaleTargetRef:
+    apiVersion: apps/v1
+    kind: Deployment
+    name: learningsteps-api
+  minReplicas: 2                    # never fewer than 2 (one per node)
+  maxReplicas: 6
+  metrics:
+    - type: Resource
+      resource:
+        name: cpu
+        target:
+          type: Utilization
+          # Percent of the CPU *request* (100m): above 70m per pod on
+          # average, add pods.
+          averageUtilization: 70
+  behavior:
+    scaleDown:
+      # Wait 5 minutes of low load before removing pods (avoids flapping).
+      stabilizationWindowSeconds: 300
+---
+# Stable internal address for the pods. Pods come and go with changing IPs,
+# the Service stays and spreads requests across all ready pods.
+apiVersion: v1
+kind: Service
+metadata:
+  name: learningsteps-api
+  namespace: learningsteps
+spec:
+  type: ClusterIP             # only reachable inside the cluster
+  selector:
+    app: learningsteps-api    # all pods with this label (see the Deployment)
+  ports:
+    - port: 80                # port of the Service
+      targetPort: 8000        # port of the container
+---
+# Rule for the ingress controller: HTTP from outside goes to the Service.
+apiVersion: networking.k8s.io/v1
+kind: Ingress
+metadata:
+  name: learningsteps-api
+  namespace: learningsteps
+spec:
+  # The managed NGINX from the App Routing add-on (web_app_routing in aks.tf).
+  ingressClassName: webapprouting.kubernetes.azure.com
+  # No host: answers on the public IP for any hostname. With a DNS name
+  # (and HTTPS) a "host:" and a "tls:" section would follow here.
+  rules:
+    - http:
+        paths:
+          - path: /
+            pathType: Prefix  # "/" and everything below it
+            backend:
+              service:
+                name: learningsteps-api
+                port:
+                  number: 80
+---
+# NetworkPolicies (enforced by Cilium). Principle: deny everything in this
+# namespace, then allow exactly what the app needs.
+#
+# 1. Default deny: no pod in the namespace may receive or send anything,
+#    unless another policy below allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: learningsteps
+spec:
+  podSelector: {}               # {} = all pods in the namespace
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. Incoming: only the NGINX ingress controller may reach the API, only on 8000.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-allow-from-ingress
+  namespace: learningsteps
+spec:
+  podSelector:
+    matchLabels:
+      app: learningsteps-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: app-routing-system
+          podSelector:
+            matchLabels:
+              app: nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# 3. Outgoing: API and schema job may only resolve names (DNS) and talk to
+#    PostgreSQL. Everything else is blocked, including the internet and the
+#    node's IMDS endpoint (169.254.169.254), which would hand out a token of
+#    the node's identity.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-and-postgres
+  namespace: learningsteps
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["learningsteps-api", "db-init"]
+  policyTypes:
+    - Egress
+  egress:
+    # DNS: CoreDNS in kube-system
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # PostgreSQL: the delegated database subnet (postgres_subnet_prefix in Terraform)
+    - to:
+        - ipBlock:
+            cidr: 10.10.1.0/24
+      ports:
+        - protocol: TCP
+          port: 5432

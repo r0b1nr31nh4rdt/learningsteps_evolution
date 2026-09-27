@@ -1,0 +1,75 @@
+# One-off initialization of the database schema. Separate from app.yaml
+# because it runs once, not permanently. Applied with:
+#   ./k8s-manifests/deploy.sh --db-init
+#
+# The database is only reachable from inside the VNet, so the schema is
+# applied from a pod in the cluster instead of from a laptop.
+
+# The SQL is in db/schema.sql. deploy.sh --db-init puts it into the
+# ConfigMap "db-schema" before starting this job.
+apiVersion: batch/v1
+kind: Job
+metadata:
+  name: db-init
+  namespace: learningsteps
+spec:
+  backoffLimit: 3                   # retry at most 3 times on failure
+  ttlSecondsAfterFinished: 3600     # delete the finished job after one hour
+  template:
+    metadata:
+      labels:
+        app: db-init
+        azure.workload.identity/use: "true"
+    spec:
+      # Same identity as the app: gets DATABASE_URL from Key Vault the same way.
+      serviceAccountName: learningsteps-app
+      restartPolicy: Never          # a failed attempt becomes a new pod (see backoffLimit)
+      securityContext:
+        runAsNonRoot: true
+        runAsUser: 70               # the "postgres" user of the Alpine image
+        seccompProfile:
+          type: RuntimeDefault
+      containers:
+        - name: psql
+          image: postgres:16-alpine # only used for the psql client
+          # Kubernetes replaces $(DATABASE_URL) with the environment variable.
+          # ON_ERROR_STOP: abort (and fail the job) at the first SQL error.
+          # Finally print the table definition into the job log as proof.
+          command: ["psql", "$(DATABASE_URL)", "-v", "ON_ERROR_STOP=1", "-f", "/sql/schema.sql", "-c", "\\d entries"]
+          env:
+            - name: DATABASE_URL
+              valueFrom:
+                secretKeyRef:
+                  name: db-credentials
+                  key: DATABASE_URL
+          volumeMounts:
+            - name: sql
+              mountPath: /sql
+              readOnly: true
+            # Mounting the CSI volume makes the driver fetch the secret for
+            # this pod as well, independent of the app pods.
+            - name: secrets-store
+              mountPath: /mnt/secrets-store
+              readOnly: true
+          resources:
+            requests:
+              cpu: 50m
+              memory: 64Mi
+            limits:
+              cpu: 200m
+              memory: 128Mi
+          securityContext:
+            allowPrivilegeEscalation: false
+            readOnlyRootFilesystem: true
+            capabilities:
+              drop: ["ALL"]
+      volumes:
+        - name: sql
+          configMap:
+            name: db-schema
+        - name: secrets-store
+          csi:
+            driver: secrets-store.csi.k8s.io
+            readOnly: true
+            volumeAttributes:
+              secretProviderClass: learningsteps-kv

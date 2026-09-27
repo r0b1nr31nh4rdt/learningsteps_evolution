@@ -3,6 +3,15 @@
 
 # Environments
 .env
+.venv
+env/
+venv/
+
+# Python: compiled files and tool caches
+__pycache__/
+*.pyc
+.pytest_cache/
+.ruff_cache/
 
 #vscode
 .vscode/
@@ -10,7 +19,14 @@
 #Terraform
 *.tfstate
 *.tfstate.*
+*.tfvars
+.terraform/
 
 # ─── Secrets ───
 *.pem
 *.key
+
+notes/*
+notizen/*
+
+hints & guide/*

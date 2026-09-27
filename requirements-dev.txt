@@ -1,0 +1,5 @@
+# Tools for linting and tests (pipeline and local), not part of the image.
+-r app/requirements.txt
+pytest==9.1.1
+httpx==0.28.1      # needed by FastAPI's TestClient
+ruff==0.16.9

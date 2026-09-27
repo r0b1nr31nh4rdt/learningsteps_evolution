@@ -1,0 +1,13 @@
+# Linting in the pipeline: ruff check app tests scripts
+target-version = "py312"
+
+[lint]
+# Errors and likely bugs, not style: pyflakes (F: unused imports, undefined
+# names), pycodestyle errors/warnings (E, W), bugbear (B), sorted imports (I).
+select = ["E", "F", "W", "B", "I"]
+# B008 flags function calls in default arguments. FastAPI's
+# "service = Depends(get_service)" is exactly that and intended.
+ignore = ["B008"]
+
+[lint.pycodestyle]
+max-line-length = 120

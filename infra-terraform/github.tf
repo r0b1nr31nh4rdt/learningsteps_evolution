@@ -50,3 +50,14 @@ resource "azurerm_role_assignment" "terraform_plan_secret_reader" {
   role_definition_name = "Key Vault Secrets User"
   principal_id         = data.azurerm_user_assigned_identity.terraform_plan.principal_id
 }
+
+# The azurerm provider reads the cluster's credentials while refreshing
+# (listClusterUserCredential), so plan needs this role, not just Reader.
+# Because the cluster uses local accounts, these credentials give full access
+# inside the cluster; see README "CI/CD Pipeline" (limitation) and the
+# hardening step "Entra ID integration, local accounts disabled".
+resource "azurerm_role_assignment" "terraform_plan_aks_user" {
+  scope                = azurerm_kubernetes_cluster.main.id
+  role_definition_name = "Azure Kubernetes Service Cluster User Role"
+  principal_id         = data.azurerm_user_assigned_identity.terraform_plan.principal_id
+}

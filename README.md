@@ -311,7 +311,7 @@ client, tenant and subscription IDs are not sensitive and are repository
 
 | Identity | Federated for | May do |
 |---|---|---|
-| `id-github-terraform-plan` | branch `main`, pull requests | read the app and bootstrap resource groups, read the state, read the one database secret (plan compares it) |
+| `id-github-terraform-plan` | branch `main`, pull requests | read the app and bootstrap resource groups, read the state, read the one database secret (plan compares it), fetch AKS user credentials (the provider reads them while refreshing) |
 | `id-github-terraform-apply` | environment `infrastructure` (approval) | Contributor on **the app resource group only**; assign **only seven listed roles** there; write the state |
 | `id-github-learningsteps` | branch `main`, environment `production` | push images to ACR, fetch AKS credentials, read the app resource group |
 
@@ -336,10 +336,16 @@ client, tenant and subscription IDs are not sensitive and are repository
   the name-only form; with the IDs, a deleted and re-created repository of the
   same name could not obtain the identity.
 
-*Limitation:* the cluster uses local accounts, so the credentials from
-`az aks get-credentials` give full rights inside the cluster. Entra ID
-integration with Azure RBAC for Kubernetes would allow limiting the deploy
-identity to the `learningsteps` namespace.
+*Limitation:* the cluster uses local accounts, so its user credentials give
+full rights inside the cluster. Two identities can fetch them: the deploy
+identity (it needs to deploy) and, as a side effect, the plan identity, because
+the `azurerm` provider reads the cluster credentials while refreshing
+(`listClusterUserCredential`; the first pipeline plan failed with 403 without
+it). The read-only plan identity therefore has indirect admin access to
+Kubernetes. The fix is Entra ID integration with local accounts disabled:
+credentials alone are then worthless and every Kubernetes action is checked
+against Azure roles, so the plan identity would get nothing inside the cluster
+and the deploy identity could be limited to the `learningsteps` namespace.
 
 ### Remote state
 
@@ -634,6 +640,8 @@ planned, at the latest when Terraform runs in a pipeline.
 
 - HTTPS on the ingress (DNS zone + certificate). Until then the API is served
   over plain HTTP on the ingress IP, like in iteration 1.
+- AKS with Entra ID integration and local accounts disabled (see the
+  limitation in *CI/CD Pipeline*)
 - Network Security Groups between the subnets
 - `prevent_destroy` on the database once it holds real data
 - Private endpoint for Key Vault

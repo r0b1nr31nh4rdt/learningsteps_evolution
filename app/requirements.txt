@@ -1,0 +1,6 @@
+# Pinned versions: every build installs exactly these, and scanners (Trivy)
+# can match them against known vulnerabilities.
+fastapi==0.141.1
+uvicorn==0.54.0
+python-dotenv==1.2.3
+asyncpg==0.31.0

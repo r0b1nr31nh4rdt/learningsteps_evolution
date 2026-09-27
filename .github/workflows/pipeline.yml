@@ -1,0 +1,168 @@
+# Build - Scan - Deploy for LearningSteps.
+#
+#   secrets ──┐
+#   lint-test ├──> build-scan-push ──> deploy
+#   iac-scan ─┘
+#
+# Pull requests: everything except pushing the image and deploying.
+# Push to main:  everything; the deployment only runs if every check passed.
+#
+# Azure sign-in uses OIDC (no stored password). The identity comes from
+# infra-bootstrap/, its permissions from infra-terraform/github.tf.
+# Repository variables (not secrets, none of them is sensitive):
+#   AZURE_CLIENT_ID, AZURE_TENANT_ID, AZURE_SUBSCRIPTION_ID
+#
+# Third-party actions are pinned to a commit SHA (with the version as a
+# comment): a moved tag or a compromised release cannot change what runs here.
+
+name: pipeline
+
+on:
+  push:
+    branches: [main]
+    paths-ignore: ["notizen/**", "hints & guide/**", "**.md"]
+  pull_request:
+    paths-ignore: ["notizen/**", "hints & guide/**", "**.md"]
+  workflow_dispatch: {}          # manual start, e.g. after terraform apply
+
+permissions:
+  contents: read                 # default for all jobs; widened per job only where needed
+
+env:
+  RESOURCE_GROUP: rg-learningsteps-dev
+  IMAGE_NAME: learningsteps-api
+  TRIVY_VERSION: v0.74.0
+
+jobs:
+  # ---------------------------------------------------------------- 1. checks
+  secrets:
+    name: Secret scan (gitleaks)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0         # whole history: a secret removed later is still leaked
+      - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  lint-test:
+    name: Lint and test
+    runs-on: ubuntu-latest
+    services:
+      postgres:                  # throwaway database for the tests
+        image: postgres:16-alpine
+        env:
+          POSTGRES_PASSWORD: test
+          POSTGRES_DB: learning_journal
+        ports: ["5432:5432"]
+        options: >-
+          --health-cmd "pg_isready -U postgres"
+          --health-interval 5s --health-timeout 5s --health-retries 10
+    env:
+      DATABASE_URL: postgresql://postgres:test@localhost:5432/learning_journal
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
+        with:
+          python-version: "3.12"   # same as the image
+          cache: pip
+          cache-dependency-path: requirements-dev.txt
+      - run: pip install -r requirements-dev.txt
+      - name: Lint (ruff)
+        run: ruff check app tests scripts
+      - name: Test (pytest)
+        run: pytest -v tests
+
+  iac-scan:
+    name: Config and dependency scan (Trivy)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+      - name: Misconfigurations in Terraform, Kubernetes manifests, Dockerfile
+        # Accepted risks with reason and expiry date: .trivyignore.yaml
+        run: >-
+          trivy config --severity HIGH,CRITICAL --exit-code 1
+          --ignorefile .trivyignore.yaml .
+      - name: Known vulnerabilities in the Python dependencies
+        run: >-
+          trivy fs --scanners vuln --severity HIGH,CRITICAL --ignore-unfixed
+          --exit-code 1 .
+
+  # ------------------------------------------------------ 2. build, scan, push
+  build-scan-push:
+    name: Build, scan and push image
+    needs: [secrets, lint-test, iac-scan]
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      id-token: write            # request the OIDC token for the Azure sign-in
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - name: Build
+        run: docker build -t "$IMAGE_NAME:${{ github.sha }}" .
+      - uses: aquasecurity/setup-trivy@81e514348e19b6112ce2a7e3ecbafe19c1e1f567 # v0.3.1
+        with:
+          version: ${{ env.TRIVY_VERSION }}
+      - name: Scan image before pushing
+        # --ignore-unfixed: vulnerabilities without an available fix (mostly in
+        # the Debian base image) cannot be fixed by us and do not fail the run.
+        run: >-
+          trivy image --severity HIGH,CRITICAL --ignore-unfixed --exit-code 1
+          "$IMAGE_NAME:${{ github.sha }}"
+
+      - name: Azure sign-in (OIDC)
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Push to ACR
+        if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+        run: |
+          ACR_NAME="$(az acr list -g "$RESOURCE_GROUP" --query '[0].name' -o tsv)"
+          ACR_SERVER="$(az acr list -g "$RESOURCE_GROUP" --query '[0].loginServer' -o tsv)"
+          az acr login --name "$ACR_NAME"
+          docker tag "$IMAGE_NAME:${{ github.sha }}" "$ACR_SERVER/$IMAGE_NAME:${{ github.sha }}"
+          docker push "$ACR_SERVER/$IMAGE_NAME:${{ github.sha }}"
+
+  # ------------------------------------------------------------- 3. deploy
+  deploy:
+    name: Deploy to AKS
+    needs: build-scan-push
+    if: github.ref == 'refs/heads/main' && github.event_name != 'pull_request'
+    runs-on: ubuntu-latest
+    concurrency: deploy          # never two deployments at the same time
+    permissions:
+      contents: read
+      id-token: write
+    env:
+      VALUES_FROM: azure         # deploy.sh reads names from Azure, no Terraform state here
+      IMAGE_TAG: ${{ github.sha }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - name: Apply manifests with the new image
+        run: ./k8s-manifests/deploy.sh
+      - name: Wait for the rollout
+        # Without this step the job would be green as soon as kubectl sent the
+        # manifest, not when the new pods actually run.
+        run: kubectl rollout status deployment/learningsteps-api -n learningsteps --timeout=300s
+      - name: Database schema (idempotent)
+        run: ./k8s-manifests/deploy.sh --db-init
+      - name: Demo data (only if the database is empty)
+        run: ./k8s-manifests/deploy.sh --seed
+      - name: Smoke test from outside
+        run: |
+          IP="$(kubectl get ingress learningsteps-api -n learningsteps -o jsonpath='{.status.loadBalancer.ingress[0].ip}')"
+          curl --fail --silent --show-error "http://$IP/health"
+          curl --fail --silent --show-error --output /dev/null "http://$IP/entries"
+          echo "Deployed ${{ github.sha }} to http://$IP"

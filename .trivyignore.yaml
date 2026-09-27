@@ -1,0 +1,28 @@
+# Accepted risks: findings that are known, assessed and deliberately not fixed.
+# Each entry has a reason (statement) and an expiry date. After that date the
+# finding counts again and the pipeline fails, which forces a new review.
+# Owner of these decisions: robin-reinhardt. Decided on 2026-09-27.
+
+misconfigurations:
+  - id: AZU-0041
+    paths:
+      - "**/aks.tf"
+    statement: >-
+      AKS API server is not limited to authorized IP ranges. The deploy
+      pipeline runs on GitHub-hosted runners whose IP addresses change on every
+      run, so a fixed allow list would lock the pipeline out. Mitigations:
+      access requires Azure credentials (OIDC, no stored secrets), the pipeline
+      identity may only fetch cluster credentials, not manage the cluster.
+      Proper fix: private cluster with a self-hosted runner inside the VNet.
+    expired_at: 2026-12-31
+
+  - id: AZU-0013
+    paths:
+      - "**/keyvault.tf"
+    statement: >-
+      Key Vault has no network ACL (public endpoint). Terraform writes the
+      database secret from a laptop with a changing IP address. Mitigations:
+      RBAC authorization only, the app identity can read exactly one secret,
+      no access policies, no shared keys. Proper fix: private endpoint and
+      Terraform running from inside the network.
+    expired_at: 2026-12-31

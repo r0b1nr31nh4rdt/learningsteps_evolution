@@ -295,7 +295,12 @@ Azure access.
 
 **Passwordless Azure sign-in (OIDC).** GitHub issues a signed token per run;
 Entra ID exchanges it for the pipeline identity only if it was issued for this
-repository and the `main` branch (federated credential). No client secret is
+repository and the `main` branch (federated credential). The subject GitHub
+presents contains the immutable numeric IDs of owner and repository
+(`repo:r0b1nr31nh4rdt@55619504/learningsteps_evolution@1378709940:ref:refs/heads/main`),
+not only their names. The first run failed with `AADSTS700213` because the
+credential expected the name-only form; with the IDs, a deleted and re-created
+repository of the same name could not obtain the identity. No client secret is
 stored in GitHub; the three values the workflow needs (client, tenant and
 subscription ID) are not sensitive and are stored as repository *variables*.
 

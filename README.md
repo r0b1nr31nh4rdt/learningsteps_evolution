@@ -11,8 +11,9 @@ ran the app on two VMs provisioned with Azure CLI commands.
 
 > **Status: work in progress.** The Terraform configuration is written and
 > has been destroyed and re-applied successfully, the app runs on AKS with
-> its database schema, and all CRUD operations work. The CI/CD pipeline is
-> written and checked locally; its first run on GitHub is pending.
+> its database schema, and all CRUD operations work. The CI/CD pipeline ran
+> on GitHub up to the Azure sign-in; it is being extended with Terraform plan,
+> approval and apply.
 
 ---
 
@@ -273,13 +274,15 @@ were made:
 
 ## CI/CD Pipeline
 
-One workflow, `.github/workflows/pipeline.yml`, checks everything once and
-deploys only if every check passed:
+One workflow, `.github/workflows/pipeline.yml`, checks everything, changes the
+infrastructure after a manual approval, and deploys only if every step before
+succeeded:
 
 ```
 secrets ──┐
-lint-test ├──> build-scan-push ──> deploy
-iac-scan ─┘
+lint-test ├──> terraform-plan ──> terraform-apply ──> build-scan-push ──> deploy
+iac-scan ─┘                       (approval; only        (push only        (main only)
+                                   if plan has changes)   on main)
 ```
 
 | Job | What | Runs on |
@@ -287,62 +290,87 @@ iac-scan ─┘
 | `secrets` | gitleaks over the whole Git history | PRs and `main` |
 | `lint-test` | ruff; pytest (15 tests) against a PostgreSQL service container | PRs and `main` |
 | `iac-scan` | `trivy config` on Terraform, Kubernetes manifests and Dockerfile; `trivy fs` on the Python dependencies | PRs and `main` |
+| `terraform-plan` | `terraform plan`, shown in the run summary | PRs and `main` |
+| `terraform-apply` | waits for approval in the GitHub environment `infrastructure`, then `terraform apply` | `main`, only if the plan has changes |
 | `build-scan-push` | build the image, `trivy image` **before** pushing, push to ACR tagged with the commit SHA | build and scan on PRs, push only on `main` |
-| `deploy` | `deploy.sh`, wait for the rollout, schema job, demo data, smoke test from outside | `main` only |
+| `deploy` | `deploy.sh`, wait for the rollout, schema job, demo data, smoke test from outside (GitHub environment `production`) | `main` only |
 
-Every scan fails the run on **High** or **Critical**. Pull requests never get
-Azure access.
+Every scan fails the run on **High** or **Critical**. The infrastructure is
+changed before the app is deployed, so a push that needs new infrastructure
+and uses it in the same change works in one run. If the plan shows no
+changes, approval and apply are skipped. GitHub notifies the reviewer by email
+and in the GitHub Mobile app, where the deployment can also be approved.
 
-**Passwordless Azure sign-in (OIDC).** GitHub issues a signed token per run;
-Entra ID exchanges it for the pipeline identity only if it was issued for this
-repository and the `main` branch (federated credential). The subject GitHub
-presents contains the immutable numeric IDs of owner and repository
-(`repo:r0b1nr31nh4rdt@55619504/learningsteps_evolution@1378709940:ref:refs/heads/main`),
-not only their names. The first run failed with `AADSTS700213` because the
-credential expected the name-only form; with the IDs, a deleted and re-created
-repository of the same name could not obtain the identity. No client secret is
-stored in GitHub; the three values the workflow needs (client, tenant and
-subscription ID) are not sensitive and are stored as repository *variables*.
+### Three identities, each with only what its job needs
 
-**The pipeline identity survives a rebuild.** It lives in a separate Terraform
-configuration, `infra-bootstrap/` (own state, own resource group, never
-destroyed); otherwise every `terraform destroy`/`apply` would give it a new
-client ID and the GitHub settings would have to change each time. Its
-permissions are granted by the main stack (`infra-terraform/github.tf`),
-because they point to resources that are rebuilt.
+All Azure sign-ins use **OIDC**: GitHub issues a signed token per job, and
+Entra ID exchanges it for an Azure identity only if the token's subject
+matches a federated credential. No client secret is stored in GitHub; the
+client, tenant and subscription IDs are not sensitive and are repository
+*variables*.
 
-**Least privilege for the pipeline:** `AcrPush` on the registry, *Azure
-Kubernetes Service Cluster User Role* on the cluster, `Reader` on the resource
-group (to look up names instead of reading Terraform state). No Owner or
-Contributor role, no access to the Terraform state, and Terraform is **not**
-applied by the pipeline, only scanned: applying it would require the most
-powerful identity in the project (it assigns roles) and access to the state,
-which contains the database password. Infrastructure changes therefore go
-through the pipeline as a gate (the scan must pass) and are then applied by
-hand.
+| Identity | Federated for | May do |
+|---|---|---|
+| `id-github-terraform-plan` | branch `main`, pull requests | read the app and bootstrap resource groups, read the state, read the one database secret (plan compares it) |
+| `id-github-terraform-apply` | environment `infrastructure` (approval) | Contributor on **the app resource group only**; assign **only seven listed roles** there; write the state |
+| `id-github-learningsteps` | branch `main`, environment `production` | push images to ACR, fetch AKS credentials, read the app resource group |
 
-A manual approval step in the pipeline would not remove that privilege: it
-controls *when* the job runs, not *what* its identity may do. The production
-pattern would be `terraform plan` in the pull request and `apply` after
-approval, with remote state in Azure Storage, the federated credential bound
-to a protected GitHub *environment* instead of the branch, and the right to
-assign roles constrained by an Azure RBAC condition to the few roles this
-stack needs. For this project the simpler manual apply was chosen
-deliberately.
+- **Approval binds the power.** The apply identity trusts only tokens for the
+  environment `infrastructure`, and GitHub issues those only to a job that
+  passed the required review. A changed workflow on `main` cannot simply use
+  the apply identity without approval.
+- **Resource group scope instead of subscription scope.** The application
+  resource group is owned by the bootstrap stack (taken over with an
+  `import` block, released from the main stack with a `removed` block that
+  keeps it in Azure). Therefore the apply identity needs no rights outside
+  this one group, not even on other resource groups of the subscription.
+- **Constrained delegation.** Terraform assigns roles (for example AcrPull
+  for the nodes), so the apply identity must be able to assign roles. An
+  Azure RBAC condition on *Role Based Access Control Administrator* limits
+  this to the seven roles the stack uses; it can never grant Owner or User
+  Access Administrator.
+- **Subject format.** GitHub presents the owner and repository with their
+  immutable numeric IDs
+  (`repo:r0b1nr31nh4rdt@55619504/learningsteps_evolution@1378709940:...`).
+  The first run failed with `AADSTS700213` because the credential expected
+  the name-only form; with the IDs, a deleted and re-created repository of the
+  same name could not obtain the identity.
 
 *Limitation:* the cluster uses local accounts, so the credentials from
 `az aks get-credentials` give full rights inside the cluster. Entra ID
-integration with Azure RBAC for Kubernetes would allow limiting the pipeline
-to the `learningsteps` namespace.
+integration with Azure RBAC for Kubernetes would allow limiting the deploy
+identity to the `learningsteps` namespace.
 
-**Actions pinned to commit SHAs** (`actions/checkout@3d3c42e… # v7.0.1`). A
-tag can be moved to other code; a commit SHA cannot. A compromised release of
-an action therefore does not run here unnoticed.
+### Remote state
 
-**Values without Terraform state.** `deploy.sh` reads names and IDs from
-`terraform output` on a laptop and directly from Azure in the pipeline
-(`VALUES_FROM=azure`). Both paths were compared and produce identical
-manifests.
+The Terraform state of the main stack moved from the laptop to a storage
+account in the bootstrap resource group (`stlearningstepstfstate`, container
+`tfstate`), shared by the laptop and the pipeline:
+
+- account keys disabled, access only with Entra ID roles on the container
+  (you, plan, apply)
+- HTTPS and TLS 1.2 only, infrastructure encryption (second encryption layer)
+- blob versioning and 30 days soft delete, so an overwritten or deleted state
+  can be restored
+- the backend locks the state while `apply` runs; `plan` runs with
+  `-lock=false` because it only reads
+
+The plan is shown in the run summary, where sensitive values appear as
+`(sensitive value)`. The binary plan file is **not** uploaded as an artifact:
+it contains those values in plain text, and artifacts of a public repository
+can be downloaded by any GitHub user. The apply job therefore plans again;
+approving shortly after reading the summary keeps the two close.
+
+### Other measures
+
+- **Actions pinned to commit SHAs** (`actions/checkout@3d3c42e… # v7.0.1`). A
+  tag can be moved to other code; a commit SHA cannot.
+- **Values without Terraform in the deploy job.** `deploy.sh` reads names and
+  IDs from `terraform output` on a laptop and directly from Azure in the
+  pipeline (`VALUES_FROM=azure`). Both paths produce identical manifests.
+- **Nightly stop.** When the course tenant has stopped the cluster and the
+  database, `terraform plan` fails (a stopped PostgreSQL server cannot be
+  read) and nothing after it runs.
 
 ---
 
@@ -624,7 +652,10 @@ planned, at the latest when Terraform runs in a pipeline.
 ├── tests/                    pytest suite (API, validation, seed script)
 ├── scripts/
 │   └── seed_demo_data.py     Adds 5 demo entries if the database is empty
-├── infra-bootstrap/          Pipeline identity with OIDC trust (never destroyed)
+├── infra-bootstrap/          Created once, never destroyed:
+│   ├── main.tf               app and bootstrap resource groups, deploy identity
+│   ├── identities.tf         plan and apply identities, constrained role rights
+│   └── state.tf              storage account for the remote Terraform state
 ├── infra-terraform/          Azure infrastructure (one Terraform state)
 │   ├── providers.tf          Provider versions and configuration
 │   ├── variables.tf          Inputs with defaults
@@ -656,23 +687,31 @@ planned, at the latest when Terraform runs in a pipeline.
 Prerequisites: an Azure subscription where you can assign roles (Owner or
 User Access Administrator), the Azure CLI and Terraform ≥ 1.6.
 
-0. **Once:** create the pipeline identity in `infra-bootstrap/`
-   (`terraform init && terraform apply`), and store its outputs
-   `AZURE_CLIENT_ID`, `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID` as repository
-   variables in GitHub (Settings → Secrets and variables → Actions →
-   Variables). The main stack below reads this identity, so it has to exist
-   first.
+0. **Once:** apply `infra-bootstrap/` (`terraform init && terraform apply`).
+   It creates the resource groups, the state storage and the three pipeline
+   identities. In GitHub:
+   - store its outputs as repository variables (Settings → Secrets and
+     variables → Actions → Variables): `AZURE_CLIENT_ID`,
+     `AZURE_CLIENT_ID_TERRAFORM_PLAN`, `AZURE_CLIENT_ID_TERRAFORM_APPLY`,
+     `AZURE_TENANT_ID`, `AZURE_SUBSCRIPTION_ID`
+   - create the environments (Settings → Environments) `infrastructure` with
+     yourself as required reviewer and `production`, both limited to the
+     `main` branch
 1. Log in: `az login`
 2. Create `infra-terraform/terraform.tfvars` (git-ignored):
    ```hcl
    subscription_id = "<your-subscription-id>"
    ```
-3. In `infra-terraform/`:
+3. In `infra-terraform/` (the state is in Azure Storage, `az login` gives
+   access):
    ```bash
    terraform init
    terraform plan
    terraform apply
    ```
+   After the first setup, infrastructure changes go through the pipeline
+   (plan, approval, apply). Running Terraform locally stays possible, for
+   example for `terraform destroy`.
 4. If the secret fails with `403` on the first run, run `terraform apply` again.
 5. Show the values for the next steps and connect `kubectl` to the cluster:
    ```bash

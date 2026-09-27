@@ -19,8 +19,8 @@ resource "random_string" "postgres_suffix" {
 
 resource "azurerm_postgresql_flexible_server" "main" {
   name                = "psql-${var.project_name}-${var.environment}-${random_string.postgres_suffix.result}"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
 
   version    = var.postgres_version
   sku_name   = var.postgres_sku

@@ -140,3 +140,21 @@ variable "github_identity_resource_group" {
   type        = string
   default     = "rg-learningsteps-bootstrap"
 }
+
+variable "terraform_apply_identity_name" {
+  description = "Identity of terraform apply in the pipeline (../infra-bootstrap)"
+  type        = string
+  default     = "id-github-terraform-apply"
+}
+
+variable "terraform_plan_identity_name" {
+  description = "Identity of terraform plan in the pipeline (../infra-bootstrap)"
+  type        = string
+  default     = "id-github-terraform-plan"
+}
+
+variable "keyvault_admin_object_id" {
+  description = "Object ID of the person who may also write Key Vault secrets (az ad signed-in-user show --query id)"
+  type        = string
+  default     = "7f532ea2-37ce-47db-a9e2-ab43789e96fb"
+}

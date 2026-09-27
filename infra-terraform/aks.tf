@@ -2,8 +2,8 @@
 # granted access to the subnet first.
 resource "azurerm_user_assigned_identity" "aks" {
   name                = "id-aks-${var.project_name}-${var.environment}"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
 
   tags = local.common_tags
 
@@ -22,8 +22,8 @@ resource "azurerm_role_assignment" "aks_subnet" {
 
 resource "azurerm_kubernetes_cluster" "main" {
   name                = "aks-${var.project_name}-${var.environment}"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
   dns_prefix          = "${var.project_name}-${var.environment}"
 
   default_node_pool {

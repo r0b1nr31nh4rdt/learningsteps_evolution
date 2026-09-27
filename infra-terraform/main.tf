@@ -12,14 +12,18 @@ locals {
   }
 }
 
-resource "azurerm_resource_group" "main" {
-  name     = "rg-${var.project_name}-${var.environment}"
-  location = var.location
+# The resource group is created by ../infra-bootstrap (so the pipeline's apply
+# identity needs rights on this group only). This stack just reads it.
+data "azurerm_resource_group" "main" {
+  name = "rg-${var.project_name}-${var.environment}"
+}
 
-  tags = local.common_tags
+# Earlier this stack created the group itself. "removed" drops it from this
+# state WITHOUT deleting it in Azure; the bootstrap has imported it.
+removed {
+  from = azurerm_resource_group.main
 
-  # "created-on" is added after creation by the course tenant, not by us.
   lifecycle {
-    ignore_changes = [tags["created-on"]]
+    destroy = false
   }
 }

@@ -27,7 +27,26 @@ resource "azurerm_role_assignment" "github_aks_user" {
 # Read-only view of the resource group, so deploy.sh can look up names and
 # IDs (registry, vault, app identity, cluster state) without Terraform state.
 resource "azurerm_role_assignment" "github_rg_reader" {
-  scope                = azurerm_resource_group.main.id
+  scope                = data.azurerm_resource_group.main.id
   role_definition_name = "Reader"
   principal_id         = data.azurerm_user_assigned_identity.github.principal_id
+}
+
+# Identities of Terraform in the pipeline (created in ../infra-bootstrap).
+data "azurerm_user_assigned_identity" "terraform_apply" {
+  name                = var.terraform_apply_identity_name
+  resource_group_name = var.github_identity_resource_group
+}
+
+data "azurerm_user_assigned_identity" "terraform_plan" {
+  name                = var.terraform_plan_identity_name
+  resource_group_name = var.github_identity_resource_group
+}
+
+# terraform plan reads the current value of the secret to compare it with the
+# code, so the plan identity needs read access to exactly this secret.
+resource "azurerm_role_assignment" "terraform_plan_secret_reader" {
+  scope                = azurerm_key_vault_secret.database_url.resource_versionless_id
+  role_definition_name = "Key Vault Secrets User"
+  principal_id         = data.azurerm_user_assigned_identity.terraform_plan.principal_id
 }

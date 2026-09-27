@@ -26,3 +26,17 @@ misconfigurations:
       no access policies, no shared keys. Proper fix: private endpoint and
       Terraform running from inside the network.
     expired_at: 2026-12-31
+
+  - id: AZU-0012
+    paths:
+      - "**/state.tf"
+    statement: >-
+      Storage account for the Terraform state allows network access by
+      default. Terraform runs on GitHub-hosted runners and on a laptop, both
+      with changing IP addresses. Mitigations: account keys disabled (Entra ID
+      only), access limited by role to the tfstate container for three
+      identities (you, terraform-plan, terraform-apply), HTTPS/TLS 1.2 only,
+      infrastructure encryption, versioning and soft delete to recover an
+      overwritten or deleted state. Proper fix: private endpoint and a
+      self-hosted runner inside the network.
+    expired_at: 2026-12-31

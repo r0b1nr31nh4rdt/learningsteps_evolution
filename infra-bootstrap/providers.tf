@@ -16,4 +16,8 @@ terraform {
 provider "azurerm" {
   features {}
   subscription_id = var.subscription_id
+
+  # Talk to Storage with Entra ID instead of account keys (keys are disabled
+  # on the state storage account).
+  storage_use_azuread = true
 }

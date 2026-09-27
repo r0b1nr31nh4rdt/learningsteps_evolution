@@ -20,3 +20,15 @@ output "github_identity_name" {
 output "github_identity_resource_group" {
   value = azurerm_resource_group.bootstrap.name
 }
+
+output "AZURE_CLIENT_ID_TERRAFORM_PLAN" {
+  value = azurerm_user_assigned_identity.terraform_plan.client_id
+}
+
+output "AZURE_CLIENT_ID_TERRAFORM_APPLY" {
+  value = azurerm_user_assigned_identity.terraform_apply.client_id
+}
+
+output "tfstate_storage_account" {
+  value = azurerm_storage_account.tfstate.name
+}

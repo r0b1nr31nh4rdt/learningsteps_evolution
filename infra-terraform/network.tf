@@ -1,7 +1,7 @@
 resource "azurerm_virtual_network" "main" {
   name                = "vnet-${var.project_name}-${var.environment}"
-  location            = azurerm_resource_group.main.location
-  resource_group_name = azurerm_resource_group.main.name
+  location            = data.azurerm_resource_group.main.location
+  resource_group_name = data.azurerm_resource_group.main.name
   address_space       = var.vnet_address_space
 
   tags = local.common_tags
@@ -14,7 +14,7 @@ resource "azurerm_virtual_network" "main" {
 
 resource "azurerm_subnet" "aks" {
   name                 = "snet-aks"
-  resource_group_name  = azurerm_resource_group.main.name
+  resource_group_name  = data.azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [var.aks_subnet_prefix]
 }
@@ -23,7 +23,7 @@ resource "azurerm_subnet" "aks" {
 # delegated to the service, so nothing else can be placed in it.
 resource "azurerm_subnet" "postgres" {
   name                 = "snet-postgres"
-  resource_group_name  = azurerm_resource_group.main.name
+  resource_group_name  = data.azurerm_resource_group.main.name
   virtual_network_name = azurerm_virtual_network.main.name
   address_prefixes     = [var.postgres_subnet_prefix]
 
@@ -45,7 +45,7 @@ resource "azurerm_subnet" "postgres" {
 # Private DNS: lets the cluster resolve the server's hostname to its private IP.
 resource "azurerm_private_dns_zone" "postgres" {
   name                = "${var.project_name}.private.postgres.database.azure.com"
-  resource_group_name = azurerm_resource_group.main.name
+  resource_group_name = data.azurerm_resource_group.main.name
 
   tags = local.common_tags
 
@@ -57,7 +57,7 @@ resource "azurerm_private_dns_zone" "postgres" {
 
 resource "azurerm_private_dns_zone_virtual_network_link" "postgres" {
   name                  = "postgres-dns-link"
-  resource_group_name   = azurerm_resource_group.main.name
+  resource_group_name   = data.azurerm_resource_group.main.name
   private_dns_zone_name = azurerm_private_dns_zone.postgres.name
   virtual_network_id    = azurerm_virtual_network.main.id
 

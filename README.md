@@ -36,35 +36,93 @@ internet, and the password lives only in Key Vault.
 
 ## Architecture
 
-``` mermaid
+### Runtime: request, secret and network paths
+
+```mermaid
 graph TB
     User([Internet / Browser])
+    Entra["Microsoft Entra ID"]
 
-    subgraph RG["Resource Group: rg-learningsteps-dev (westeurope)"]
+    subgraph MC["Node resource group MC_… (owned by AKS)"]
+        LB["Azure Load Balancer<br/>public IP"]
+    end
+
+    subgraph RG["Resource group rg-learningsteps-dev (westeurope)"]
         ACR["Container Registry<br/>admin user disabled"]
         Vault["Key Vault (RBAC)<br/>secret: database-url"]
-        AppId["Managed Identity id-app<br/>Key Vault Secrets User<br/>on this one secret"]
+        AppId["Identity id-app<br/>Secrets User on this one secret"]
+        DNS["Private DNS zone<br/>*.postgres.database.azure.com"]
 
         subgraph VNet["VNet 10.10.0.0/16"]
-            subgraph AksSub["Subnet snet-aks 10.10.0.0/24"]
-                Ingress["Ingress<br/>(App Routing / NGINX)"]
-                Pods["API pods<br/>ServiceAccount learningsteps-app"]
+            subgraph AksSub["Subnet snet-aks · AKS nodes: 2–3 VMs (cluster autoscaler), zone 3"]
+                Ingress["NGINX ingress controller<br/>(App Routing add-on)"]
+                CSI["Key Vault CSI driver"]
+                Kubelet["kubelet<br/>(node identity: AcrPull)"]
+                subgraph NS["Namespace learningsteps · NetworkPolicies: default deny"]
+                    Pods["API pods: 2–6 (HPA)<br/>non-root, read-only filesystem<br/>ConfigMap app-config"]
+                end
             end
-            subgraph PgSub["Subnet snet-postgres 10.10.1.0/24<br/>(delegated)"]
+            subgraph PgSub["Subnet snet-postgres (delegated)"]
                 DB["PostgreSQL Flexible Server 16<br/>no public access"]
             end
         end
-        DNS["Private DNS zone<br/>*.private.postgres.database.azure.com"]
     end
 
-    User -->|HTTP| LB["Azure Load Balancer<br/>(created by AKS)"]
+    User -->|HTTP| LB
     LB --> Ingress
-    Ingress --> Pods
-    Pods -->|5432, TLS| DB
-    Pods -.->|name lookup| DNS
-    Pods -.->|federated token| AppId
-    AppId -.->|read secret| Vault
-    Pods -.->|AcrPull via kubelet identity| ACR
+    Ingress -->|"8000 (only allowed inbound)"| Pods
+    Pods -->|"5432, TLS (allowed outbound)"| DB
+    Pods -.->|"DNS (allowed outbound)"| DNS
+    CSI -.->|"1: pod's ServiceAccount token"| Entra
+    Entra -.->|"2: token for"| AppId
+    CSI -.->|"3: read database-url"| Vault
+    CSI -.->|"4: env DATABASE_URL"| Pods
+    Kubelet -.->|pull image| ACR
+```
+
+Solid arrows are the request path, dotted arrows show how the app gets its
+secret (steps 1–4) and how the nodes pull images. Every arrow into or out of
+the API pods is explicitly allowed by a NetworkPolicy; everything else is
+denied.
+
+### Delivery: pipeline and identities
+
+```mermaid
+graph TB
+    Dev([git push to main / pull request])
+
+    subgraph GH["GitHub Actions: pipeline.yml"]
+        Checks["1 · checks<br/>gitleaks · ruff + pytest · Trivy config/deps"]
+        Plan["2 · terraform plan"]
+        Approve{{"3 · manual approval<br/>environment: infrastructure<br/>(only if the plan has changes)"}}
+        Apply["4 · terraform apply"]
+        Build["5 · build image · Trivy image scan · push"]
+        Deploy["6 · deploy · schema job · seed · smoke test<br/>environment: production"]
+        Checks --> Plan --> Approve --> Apply --> Build --> Deploy
+    end
+
+    Entra["Microsoft Entra ID<br/>OIDC token exchange, no stored secret"]
+
+    subgraph Boot["rg-learningsteps-bootstrap (never destroyed)"]
+        IdPlan["id terraform-plan<br/>read only"]
+        IdApply["id terraform-apply<br/>Contributor on app RG only<br/>may assign 7 listed roles"]
+        IdDeploy["id deploy<br/>AcrPush · AKS user"]
+        State[("Terraform state<br/>Entra ID only · versioned")]
+    end
+
+    subgraph App["rg-learningsteps-dev"]
+        Infra["VNet · AKS · PostgreSQL · Key Vault · ACR"]
+    end
+
+    Dev --> Checks
+    GH -.->|"each job: OIDC token<br/>(subject: branch, PR or environment)"| Entra
+    Entra -.->|plan| IdPlan
+    Entra -.->|"apply (approved job only)"| IdApply
+    Entra -.->|build, deploy| IdDeploy
+    IdPlan -->|read| State
+    IdApply -->|write| State
+    IdApply -->|create / change| Infra
+    IdDeploy -->|push image, kubectl| Infra
 ```
 
 ### Components

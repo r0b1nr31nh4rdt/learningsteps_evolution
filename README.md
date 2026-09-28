@@ -619,9 +619,6 @@ planned, at the latest when Terraform runs in a pipeline.
 
 ## Next Steps
 
-- Set up the pipeline (bootstrap, roles, GitHub variables) and run it
-- Prove the security gates: an intentionally vulnerable package and an
-  insecure Terraform rule must fail the pipeline (success criterion)
 - Resolve or justify the two remaining Critical findings of `trivy config`
   (API server authorized IP ranges, Key Vault network ACL) together with the
   pipeline, since the pipeline must fail on High/Critical
@@ -683,6 +680,7 @@ planned, at the latest when Terraform runs in a pipeline.
 │   └── deploy.sh             Fills the placeholders and applies to the cluster
 ├── .github/workflows/
 │   └── pipeline.yml          Build - Scan - Deploy
+├── screenshots/              Evidence for the verification section
 ├── .trivyignore.yaml         Accepted risks with reason and expiry date
 ├── ruff.toml                 Lint rules
 └── requirements-dev.txt      Test and lint tools (pinned)
@@ -800,6 +798,25 @@ First deployment on 2026-09-27, checked from the cluster and from the internet:
 The database line before the schema init was the expected result: the app
 reached the private database over TLS with the password from Key Vault, only
 the table was missing.
+
+### Security gates (success criterion)
+
+The brief asks to *"prove your pipeline fails if you introduce a vulnerable
+package or an insecure Terraform rule"*. Both were tested on 2026-09-28 in
+pull requests marked *DO NOT MERGE*, so `main` stayed clean and nothing was
+deployed. Both were closed without merging.
+
+| Test | Change | Result | Evidence |
+|---|---|---|---|
+| Vulnerable package | `urllib3==1.26.4` in `app/requirements.txt` | `iac-scan` failed: Trivy reported 6 HIGH vulnerabilities (e.g. CVE-2021-33503, CVE-2023-43804); lint, tests and secret scan stayed green; Terraform, build, push and deploy were skipped | [screenshot](screenshots/pipeline-test-1-vulnerable-package.png) |
+| Insecure Terraform rule | `role_based_access_control_enabled = false` in `infra-terraform/aks.tf` | `iac-scan` failed with AZU-0042 *Ensure RBAC is enabled on AKS clusters* (1 finding in `aks.tf`, 0 elsewhere); `terraform plan`/`apply` never ran, so the setting could not reach Azure | [screenshot](screenshots/pipeline-test-2-unsecure-terraform.png) |
+
+A first attempt of test 1 used `requests==2.19.0` (CVE-2018-18074). Trivy
+failed as intended, but `lint-test` failed too: that 2018 release requires
+`idna<2.8`, which conflicts with current packages, and pip gave up resolving
+the dependencies. The test switched to urllib3 (no such conflict) so that the
+security gate is shown in isolation. The first run also shows that
+incompatible dependencies are caught before anything is built.
 
 ### CRUD walkthrough (after schema init)
 

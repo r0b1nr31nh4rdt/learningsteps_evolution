@@ -11,9 +11,9 @@ ran the app on two VMs provisioned with Azure CLI commands.
 
 > **Status: work in progress.** The Terraform configuration is written and
 > has been destroyed and re-applied successfully, the app runs on AKS with
-> its database schema, and all CRUD operations work. The CI/CD pipeline ran
-> on GitHub up to the Azure sign-in; it is being extended with Terraform plan,
-> approval and apply.
+> its database schema, and all CRUD operations work. The CI/CD pipeline
+> (checks, Terraform plan/approval/apply, build, scan, push, deploy) ran green
+> end to end on GitHub on 2026-09-27.
 
 ---
 

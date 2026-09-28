@@ -12,8 +12,9 @@ ran the app on two VMs provisioned with Azure CLI commands.
 > **Status: work in progress.** The Terraform configuration is written and
 > has been destroyed and re-applied successfully, the app runs on AKS with
 > its database schema, and all CRUD operations work. The CI/CD pipeline
-> (checks, Terraform plan/approval/apply, build, scan, push, deploy) ran green
-> end to end on GitHub on 2026-09-27.
+> (checks, Terraform plan/approval/apply, build, scan, push, deploy) runs
+> green end to end, including a full rebuild from nothing (2026-09-28). All
+> required success criteria of the brief are met; see *Verification*.
 
 ---
 
@@ -875,6 +876,34 @@ failed as intended, but `lint-test` failed too: that 2018 release requires
 the dependencies. The test switched to urllib3 (no such conflict) so that the
 security gate is shown in isolation. The first run also shows that
 incompatible dependencies are caught before anything is built.
+
+### Infrastructure recovery (success criterion)
+
+Recreating the whole environment from nothing, with the final setup (remote
+state, bootstrap-owned resource group, Terraform in the pipeline), on
+2026-09-28:
+
+1. `terraform destroy` from the laptop: 28 resources deleted. Afterwards the
+   application resource group was empty, the AKS node resource group gone,
+   no Key Vault left in soft delete, and the state of the main stack empty.
+   The resource group itself stayed, as it belongs to the bootstrap.
+2. Manual run of the pipeline (`workflow_dispatch`): plan showed 28 to add,
+   the apply job waited for approval, then built the infrastructure. Build,
+   scan, push to the **new** registry, deployment, schema job and demo data
+   followed in the same run.
+
+| Check afterwards | Result |
+|---|---|
+| Nodes | 2 new VMs `Ready` |
+| API pods | 2 `Running`, one per node |
+| Image | from the new registry, tagged with the commit SHA |
+| Schema job | `Completed` |
+| Data | 5 entries: the pinned entry plus 4 random demo entries |
+| `terraform plan` from the laptop | *No changes*: what the pipeline built matches the code |
+
+The public IP changes with every rebuild (it belongs to the load balancer
+that AKS recreates); the current one is shown at the end of the deploy job and
+under *Deployments → production* on GitHub.
 
 ### CRUD walkthrough (after schema init)
 

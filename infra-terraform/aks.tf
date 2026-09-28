@@ -69,7 +69,7 @@ resource "azurerm_kubernetes_cluster" "main" {
 
   # Kubernetes RBAC (Role/RoleBinding). On by default in AKS, stated
   # explicitly so it cannot be switched off by accident (and scanners see it).
-  role_based_access_control_enabled = true
+  role_based_access_control_enabled = false
 
   # Workload identity lets a pod authenticate to Azure (Key Vault) without a password.
   oidc_issuer_enabled       = true

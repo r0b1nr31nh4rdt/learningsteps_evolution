@@ -360,6 +360,21 @@ and uses it in the same change works in one run. If the plan shows no
 changes, approval and apply are skipped. GitHub notifies the reviewer by email
 and in the GitHub Mobile app, where the deployment can also be approved.
 
+### The approval in practice
+
+A push that changes the infrastructure (here: the new platform layer) stops
+before `terraform apply`. GitHub notifies the reviewer, who can read the plan
+in the run summary and approve on the web or in the GitHub Mobile app; then
+the run continues through build and deploy.
+
+<img src="screenshots/human-approval-push-message.png" alt="Push notification: deployment review requested">
+
+<img src="screenshots/human-approval-mobile.png" alt="GitHub Mobile: checks passed, Terraform apply waiting, approve or reject" width="300">
+
+![Approved run: the apply job continues after the approval](screenshots/human-approval-done.png)
+
+![Complete run: checks, plan, approved apply, build, deploy with the URL of the environment](screenshots/pipeline-works.png)
+
 ### Three identities, each with only what its job needs
 
 All Azure sign-ins use **OIDC**: GitHub issues a signed token per job, and
@@ -707,27 +722,24 @@ planned, at the latest when Terraform runs in a pipeline.
 
 ## Next Steps
 
-- Resolve or justify the two remaining Critical findings of `trivy config`
-  (API server authorized IP ranges, Key Vault network ACL) together with the
-  pipeline, since the pipeline must fail on High/Critical
-- *(optional)* Monitoring, decided: Prometheus and Grafana **inside the
+- *(optional, in progress)* Monitoring: Prometheus and Grafana **inside the
   cluster** (as the brief asks), `prometheus_client` in the app serving
   `/metrics` on a separate port that the ingress does not expose, dashboard for
   request volume, latency and database health
-- Initialize the database schema from inside the cluster (the database is not
-  reachable from outside)
-- Remote Terraform state in Azure Storage (needed only if Terraform should
-  ever run in the pipeline)
-- **App:** create one connection pool at startup instead of one per request,
-  otherwise several pods quickly exhaust the database's connection limit
 
 ### Hardening (out of scope for now)
 
 - HTTPS on the ingress (DNS zone + certificate). Until then the API is served
   over plain HTTP on the ingress IP, like in iteration 1.
+- Private AKS cluster, private endpoints for Key Vault and the state storage,
+  and a self-hosted runner inside the VNet. This would resolve all three
+  accepted risks in `.trivyignore.yaml` (expiry 2026-12-31).
+- Smaller base image (for example distroless) to reduce the 44 unfixable
+  vulnerabilities of the Debian base image
+- Nodes in several availability zones (currently only zone 3 has capacity for
+  the VM size in this subscription)
 - Network Security Groups between the subnets
 - `prevent_destroy` on the database once it holds real data
-- Private endpoint for Key Vault
 - Purge protection on Key Vault (disabled so the environment can be destroyed
   and rebuilt quickly)
 
@@ -767,7 +779,7 @@ planned, at the latest when Terraform runs in a pipeline.
 │   └── deploy.sh             Fills the placeholders and applies to the cluster
 ├── .github/workflows/
 │   └── pipeline.yml          Build - Scan - Deploy
-├── screenshots/              Evidence for the verification section
+├── screenshots/              Evidence: security gates, approval, pipeline run
 ├── .trivyignore.yaml         Accepted risks with reason and expiry date
 ├── ruff.toml                 Lint rules
 └── requirements-dev.txt      Test and lint tools (pinned)

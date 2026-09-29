@@ -63,6 +63,11 @@ jobs:
       - uses: gitleaks/gitleaks-action@e0c47f4f8be36e29cdc102c57e68cb5cbf0e8d1e # v3.0.0
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          # No report as a downloadable artifact: in a public repository any
+          # GitHub user can download artifacts, and a report of a real finding
+          # would point to the leaked secret. Findings still fail the job and
+          # appear in the job log and summary.
+          GITLEAKS_ENABLE_UPLOAD_ARTIFACT: "false"
 
   lint-test:
     name: Lint and test

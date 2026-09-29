@@ -2,20 +2,24 @@
 #
 #   secrets ──┐
 #   lint-test ├──> terraform-plan ──> terraform-apply ──> build-scan-push ──> deploy
-#   iac-scan ─┘                       (approval, only        (push only        (main only)
-#                                      if plan has changes)   on main)
+#   iac-scan ─┘                       (approval; Terraform   (push only        (main only)
+#                                      + platform layer;      on main)
+#                                      only if something
+#                                      changed)
 #
 # Pull requests: checks, terraform plan, build and image scan. No apply, no
 #                push, no deploy.
 # Push to main:  everything. terraform-apply waits for a manual approval in the
 #                GitHub environment "infrastructure" and only runs when the
-#                plan contains changes.
+#                Terraform plan has changes or the Kubernetes platform layer
+#                (k8s-manifests/platform.yaml) changed.
 #
 # Azure sign-in uses OIDC (no stored password) with three identities from
 # infra-bootstrap/, each allowed only what its job needs:
 #   AZURE_CLIENT_ID_TERRAFORM_PLAN   read only                       (main, pull requests)
 #   AZURE_CLIENT_ID_TERRAFORM_APPLY  change the app resource group   (environment "infrastructure")
-#   AZURE_CLIENT_ID                  push images, deploy to AKS      (main, environment "production")
+#   AZURE_CLIENT_ID                  push images, deploy the app     (main, environment "production")
+#                                    layer into its namespace only
 # plus AZURE_TENANT_ID and AZURE_SUBSCRIPTION_ID. All are repository
 # variables; none of them is a secret.
 #
@@ -120,9 +124,11 @@ jobs:
       run:
         working-directory: infra-terraform
     outputs:
-      has_changes: ${{ steps.plan.outputs.has_changes }}
+      has_changes: ${{ steps.result.outputs.has_changes }}
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          fetch-depth: 0         # history, to see whether platform.yaml changed
       - uses: hashicorp/setup-terraform@dfe3c3f87815947d99a8997f908cb6525fc44e9e # v4.0.1
         with:
           terraform_version: ${{ env.TERRAFORM_VERSION }}
@@ -138,7 +144,38 @@ jobs:
           code=$?
           set -e
           [ "$code" -eq 1 ] && exit 1
-          echo "has_changes=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+          echo "changed=$([ "$code" -eq 2 ] && echo true || echo false)" >> "$GITHUB_OUTPUT"
+      - name: Platform layer changed?
+        id: platform
+        # The platform layer (namespace, service accounts, Key Vault binding,
+        # network policies) is applied by terraform-apply, so a change to it
+        # needs the approval too. A manual run always re-applies it.
+        working-directory: ${{ github.workspace }}
+        env:
+          BEFORE: ${{ github.event.before }}
+          BASE: ${{ github.event.pull_request.base.sha }}
+        run: |
+          case "$GITHUB_EVENT_NAME" in
+            push)         range="$BEFORE..$GITHUB_SHA" ;;
+            pull_request) range="$BASE...$GITHUB_SHA" ;;
+            *)            echo "changed=true" >> "$GITHUB_OUTPUT"; exit 0 ;;
+          esac
+          # exit code 0 = unchanged; anything else (changed, or history not
+          # comparable) counts as changed
+          if git diff --quiet "$range" -- k8s-manifests/platform.yaml; then
+            echo "changed=false" >> "$GITHUB_OUTPUT"
+          else
+            echo "changed=true" >> "$GITHUB_OUTPUT"
+          fi
+      - name: Result
+        id: result
+        run: |
+          echo "Terraform changes: ${{ steps.plan.outputs.changed }}, platform layer changed: ${{ steps.platform.outputs.changed }}"
+          if [ "${{ steps.plan.outputs.changed }}" = true ] || [ "${{ steps.platform.outputs.changed }}" = true ]; then
+            echo "has_changes=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has_changes=false" >> "$GITHUB_OUTPUT"
+          fi
       - name: Show the plan in the run summary
         # Sensitive values (password, connection string) appear as
         # "(sensitive value)". The binary plan file is NOT uploaded: it would
@@ -179,6 +216,22 @@ jobs:
       # Plans again and applies. The saved plan from the plan job is not
       # reused (see above); approve shortly after reading the plan summary.
       - run: terraform apply -input=false -auto-approve -no-color
+
+      # Platform layer (needs cluster admin, which only this identity and the
+      # admin have). kubectl signs in through az (OIDC) and kubelogin.
+      - uses: azure/login@a641126d1b8aa4d1fa005f4f92df94a3a4c4c906 # v3.1.0
+        with:
+          client-id: ${{ vars.AZURE_CLIENT_ID_TERRAFORM_APPLY }}
+          tenant-id: ${{ vars.AZURE_TENANT_ID }}
+          subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
+      - uses: azure/use-kubelogin@0ce7c36141aa27d4934872cf00b0120804c98a29 # v1.3
+        with:
+          kubelogin-version: v0.2.20
+      - name: Apply the Kubernetes platform layer
+        working-directory: ${{ github.workspace }}
+        env:
+          VALUES_FROM: azure
+        run: ./k8s-manifests/deploy.sh --platform
 
   # ------------------------------------------------------ 3. build, scan, push
   build-scan-push:
@@ -251,7 +304,10 @@ jobs:
           client-id: ${{ vars.AZURE_CLIENT_ID }}
           tenant-id: ${{ vars.AZURE_TENANT_ID }}
           subscription-id: ${{ vars.AZURE_SUBSCRIPTION_ID }}
-      - name: Apply manifests with the new image
+      - uses: azure/use-kubelogin@0ce7c36141aa27d4934872cf00b0120804c98a29 # v1.3
+        with:
+          kubelogin-version: v0.2.20
+      - name: Apply the app layer with the new image
         run: ./k8s-manifests/deploy.sh
       - name: Wait for the rollout
         # Without this step the job would be green as soon as kubectl sent the

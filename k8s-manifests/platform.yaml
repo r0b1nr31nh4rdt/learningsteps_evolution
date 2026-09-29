@@ -1,0 +1,144 @@
+# Platform layer: security-relevant objects that change rarely.
+# Applied by the pipeline's terraform-apply identity after approval, or by an
+# admin: ./k8s-manifests/deploy.sh --platform
+# The deploy identity cannot change anything in this file (see
+# infra-terraform/github.tf, role "LearningSteps App Deployer").
+#
+# Own area in the cluster for everything that belongs to the app.
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: learningsteps
+---
+# Identity of the app pods. The name must match the subject of the
+# federated credential in Terraform (keyvault.tf) exactly.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: learningsteps-app
+  namespace: learningsteps
+  annotations:
+    # Filled in by deploy.sh from terraform output
+    azure.workload.identity/client-id: "${APP_IDENTITY_CLIENT_ID}"
+# The app never talks to the Kubernetes API, so it gets no API token.
+automountServiceAccountToken: false
+---
+# The namespace's default ServiceAccount (Kubernetes creates it automatically).
+# No API token for pods that run without their own ServiceAccount either.
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: default
+  namespace: learningsteps
+automountServiceAccountToken: false
+---
+# Tells the Key Vault CSI driver which secret to fetch, from which vault and
+# with which identity. The driver only acts when a pod mounts a volume that
+# refers to this class (see the Deployment).
+apiVersion: secrets-store.csi.x-k8s.io/v1
+kind: SecretProviderClass
+metadata:
+  name: learningsteps-kv
+  namespace: learningsteps
+spec:
+  provider: azure
+  parameters:
+    # Workload identity: the driver signs in as the app identity with the
+    # token of the pod's ServiceAccount. No password involved.
+    clientID: "${APP_IDENTITY_CLIENT_ID}"
+    keyvaultName: "${KEY_VAULT_NAME}"
+    tenantId: "${TENANT_ID}"
+    # List of Key Vault objects to fetch. The driver expects this as a
+    # YAML text block, hence the "|" lines.
+    objects: |
+      array:
+        - |
+          objectName: database-url
+          objectType: secret
+  # Additionally copy the value into a Kubernetes Secret, so the Deployment
+  # can pass it to the container as the environment variable DATABASE_URL.
+  secretObjects:
+    - secretName: db-credentials
+      type: Opaque
+      data:
+        - objectName: database-url
+          key: DATABASE_URL
+---
+# NetworkPolicies (enforced by Cilium). Principle: deny everything in this
+# namespace, then allow exactly what the app needs.
+#
+# 1. Default deny: no pod in the namespace may receive or send anything,
+#    unless another policy below allows it.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-all
+  namespace: learningsteps
+spec:
+  podSelector: {}               # {} = all pods in the namespace
+  policyTypes:
+    - Ingress
+    - Egress
+---
+# 2. Incoming: only the NGINX ingress controller may reach the API, only on 8000.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-allow-from-ingress
+  namespace: learningsteps
+spec:
+  podSelector:
+    matchLabels:
+      app: learningsteps-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: app-routing-system
+          podSelector:
+            matchLabels:
+              app: nginx
+      ports:
+        - protocol: TCP
+          port: 8000
+---
+# 3. Outgoing: API and schema job may only resolve names (DNS) and talk to
+#    PostgreSQL. Everything else is blocked, including the internet and the
+#    node's IMDS endpoint (169.254.169.254), which would hand out a token of
+#    the node's identity.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns-and-postgres
+  namespace: learningsteps
+spec:
+  podSelector:
+    matchExpressions:
+      - key: app
+        operator: In
+        values: ["learningsteps-api", "db-init"]
+  policyTypes:
+    - Egress
+  egress:
+    # DNS: CoreDNS in kube-system
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+    # PostgreSQL: the delegated database subnet (postgres_subnet_prefix in Terraform)
+    - to:
+        - ipBlock:
+            cidr: 10.10.1.0/24
+      ports:
+        - protocol: TCP
+          port: 5432

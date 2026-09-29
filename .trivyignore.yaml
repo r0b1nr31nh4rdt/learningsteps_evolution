@@ -11,8 +11,10 @@ misconfigurations:
       AKS API server is not limited to authorized IP ranges. The deploy
       pipeline runs on GitHub-hosted runners whose IP addresses change on every
       run, so a fixed allow list would lock the pipeline out. Mitigations:
-      access requires Azure credentials (OIDC, no stored secrets), the pipeline
-      identity may only fetch cluster credentials, not manage the cluster.
+      local accounts are disabled and the cluster uses Entra ID with Azure
+      RBAC, so every request needs an Entra identity with an Azure role; the
+      pipeline signs in with OIDC (no stored secrets), and the deploy identity
+      may only change the app objects in one namespace.
       Proper fix: private cluster with a self-hosted runner inside the VNet.
     expired_at: 2026-12-31
 

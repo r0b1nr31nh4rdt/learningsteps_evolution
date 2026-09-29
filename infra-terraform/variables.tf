@@ -153,8 +153,8 @@ variable "terraform_plan_identity_name" {
   default     = "id-github-terraform-plan"
 }
 
-variable "keyvault_admin_object_id" {
-  description = "Object ID of the person who may also write Key Vault secrets (az ad signed-in-user show --query id)"
+variable "admin_object_id" {
+  description = "Object ID of the person administering the project: Key Vault secrets, cluster admin (az ad signed-in-user show --query id)"
   type        = string
   default     = "7f532ea2-37ce-47db-a9e2-ab43789e96fb"
 }

@@ -71,6 +71,19 @@ resource "azurerm_kubernetes_cluster" "main" {
   # explicitly so it cannot be switched off by accident (and scanners see it).
   role_based_access_control_enabled = true
 
+  # Sign-in with Microsoft Entra ID, and Azure roles decide what someone may
+  # do inside the cluster (github.tf). Cannot be switched off again once on.
+  azure_active_directory_role_based_access_control {
+    tenant_id          = data.azurerm_client_config.current.tenant_id
+    azure_rbac_enabled = true
+  }
+
+  # No local accounts: the credentials from "az aks get-credentials" contain
+  # no secret any more, only a pointer to Entra ID (kubelogin). Having them
+  # grants nothing without an Azure role. Emergency access as subscription
+  # Owner: az aks update --enable-local-accounts.
+  local_account_disabled = true
+
   # Workload identity lets a pod authenticate to Azure (Key Vault) without a password.
   oidc_issuer_enabled       = true
   workload_identity_enabled = true

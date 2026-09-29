@@ -37,7 +37,7 @@ resource "azurerm_key_vault" "main" {
 resource "azurerm_role_assignment" "keyvault_officer" {
   for_each = {
     terraform-apply = data.azurerm_user_assigned_identity.terraform_apply.principal_id
-    admin           = var.keyvault_admin_object_id
+    admin           = var.admin_object_id
   }
 
   scope                = azurerm_key_vault.main.id

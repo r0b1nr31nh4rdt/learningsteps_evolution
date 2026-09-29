@@ -1,13 +1,17 @@
 #!/usr/bin/env bash
-# Fills the placeholders in app.yaml with the current values of the Azure
-# resources and applies the result to the cluster. The filled-in manifest is
-# never written to disk.
+# Fills the placeholders in the manifests with the current values of the
+# Azure resources and applies the result to the cluster. The filled-in
+# manifests are never written to disk.
 #
 # Usage (from anywhere):
-#   ./k8s-manifests/deploy.sh             connect to the cluster and apply app.yaml
-#   ./k8s-manifests/deploy.sh --dry-run   only print the filled-in manifest
+#   ./k8s-manifests/deploy.sh             apply the app layer (app.yaml)
+#   ./k8s-manifests/deploy.sh --platform  apply the platform layer (platform.yaml; needs cluster admin)
+#   ./k8s-manifests/deploy.sh --dry-run   only print both filled-in manifests
 #   ./k8s-manifests/deploy.sh --db-init   run the one-off schema job (db-init.yaml)
 #   ./k8s-manifests/deploy.sh --seed      add 5 demo entries if the database is empty
+#
+# The cluster uses Entra ID sign-in: kubectl gets its token through kubelogin
+# from the current "az login" session (laptop) or the OIDC sign-in (pipeline).
 #
 # Where the values come from:
 #   - with Terraform state (your laptop): terraform output
@@ -63,8 +67,11 @@ export IMAGE_TAG
 export CONFIG_HASH="$(python3 - "$SCRIPT_DIR/app.yaml" <<'PY'
 import hashlib, sys
 docs = open(sys.argv[1]).read().split("\n---\n")
-config = [d for d in docs if "kind: ConfigMap" in d and "name: app-config" in d]
-print(hashlib.sha256(config[0].encode()).hexdigest()[:16])
+config = [d for d in docs if "kind: ConfigMap" in d and "name: app-config" in d][0]
+# Only the content lines count: editing a comment must not restart the pods.
+content = "\n".join(line for line in config.splitlines()
+                    if line.strip() and not line.lstrip().startswith("#"))
+print(hashlib.sha256(content.encode()).hexdigest()[:16])
 PY
 )"
 
@@ -72,6 +79,8 @@ PY
 PLACEHOLDERS='${APP_IDENTITY_CLIENT_ID} ${KEY_VAULT_NAME} ${TENANT_ID} ${ACR_LOGIN_SERVER} ${IMAGE_TAG} ${CONFIG_HASH}'
 
 if [[ "${1:-}" == "--dry-run" ]]; then
+  envsubst "$PLACEHOLDERS" < "$SCRIPT_DIR/platform.yaml"
+  echo "---"
   envsubst "$PLACEHOLDERS" < "$SCRIPT_DIR/app.yaml"
   exit 0
 fi
@@ -90,6 +99,32 @@ az aks get-credentials \
   --resource-group "$RESOURCE_GROUP" \
   --name "$CLUSTER_NAME" \
   --overwrite-existing
+# The credentials contain no secret, only "ask Entra ID". kubelogin fetches the
+# token with the identity az is signed in with.
+kubelogin convert-kubeconfig -l azurecli
+
+# New Kubernetes role assignments in Azure take a few minutes to take effect
+# (e.g. right after a rebuild). Wait until the permission is there instead of
+# failing with 403. Usage: wait_for_permission <verb> <resource> [namespace]
+wait_for_permission() {
+  local ns_args=()
+  [[ -n "${3:-}" ]] && ns_args=(-n "$3")
+  for _ in $(seq 30); do
+    [[ "$(kubectl auth can-i "$1" "$2" ${ns_args[@]+"${ns_args[@]}"} 2>/dev/null)" == "yes" ]] && return 0
+    echo "Waiting for permission to $1 $2 ${3:+in $3} (role assignments take a few minutes) ..."
+    sleep 10
+  done
+  echo "No permission to $1 $2 ${3:+in $3} after 5 minutes." >&2
+  return 1
+}
+
+if [[ "${1:-}" == "--platform" ]]; then
+  wait_for_permission create namespaces
+  envsubst "$PLACEHOLDERS" < "$SCRIPT_DIR/platform.yaml" | kubectl apply -f -
+  exit 0
+fi
+
+wait_for_permission patch deployments learningsteps
 
 if [[ "${1:-}" == "--db-init" ]]; then
   # The SQL lives in db/schema.sql (also used by the tests); the job reads it

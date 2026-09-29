@@ -32,3 +32,7 @@ output "AZURE_CLIENT_ID_TERRAFORM_APPLY" {
 output "tfstate_storage_account" {
   value = azurerm_storage_account.tfstate.name
 }
+
+output "app_deployer_role_name" {
+  value = azurerm_role_definition.app_deployer.name
+}

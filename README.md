@@ -370,9 +370,9 @@ client, tenant and subscription IDs are not sensitive and are repository
 
 | Identity | Federated for | May do |
 |---|---|---|
-| `id-github-terraform-plan` | branch `main`, pull requests | read the app and bootstrap resource groups, read the state, read the one database secret (plan compares it), fetch AKS user credentials (the provider reads them while refreshing) |
-| `id-github-terraform-apply` | environment `infrastructure` (approval) | Contributor on **the app resource group only**; assign **only seven listed roles** there; write the state |
-| `id-github-learningsteps` | branch `main`, environment `production` | push images to ACR, fetch AKS credentials, read the app resource group |
+| `id-github-terraform-plan` | branch `main`, pull requests | read the app and bootstrap resource groups, read the state, read the one database secret (plan compares it). **Nothing inside the cluster.** |
+| `id-github-terraform-apply` | environment `infrastructure` (approval) | Contributor on **the app resource group only**; assign **only nine listed roles** there; write the state; cluster admin inside Kubernetes to apply the platform layer |
+| `id-github-learningsteps` | branch `main`, environment `production` | push images to ACR; inside Kubernetes **only the app layer in the namespace `learningsteps`** (custom role, see below) |
 
 - **Approval binds the power.** The apply identity trusts only tokens for the
   environment `infrastructure`, and GitHub issues those only to a job that
@@ -395,16 +395,45 @@ client, tenant and subscription IDs are not sensitive and are repository
   the name-only form; with the IDs, a deleted and re-created repository of the
   same name could not obtain the identity.
 
-*Limitation:* the cluster uses local accounts, so its user credentials give
-full rights inside the cluster. Two identities can fetch them: the deploy
-identity (it needs to deploy) and, as a side effect, the plan identity, because
-the `azurerm` provider reads the cluster credentials while refreshing
-(`listClusterUserCredential`; the first pipeline plan failed with 403 without
-it). The read-only plan identity therefore has indirect admin access to
-Kubernetes. The fix is Entra ID integration with local accounts disabled:
-credentials alone are then worthless and every Kubernetes action is checked
-against Azure roles, so the plan identity would get nothing inside the cluster
-and the deploy identity could be limited to the `learningsteps` namespace.
+### Kubernetes access: Entra ID only, least privilege per layer
+
+The cluster uses Microsoft Entra ID sign-in with Azure RBAC for Kubernetes,
+and **local accounts are disabled**. The credentials from
+`az aks get-credentials` contain no secret any more, only a pointer to Entra
+ID (`kubelogin` fetches the token); what someone may do inside the cluster is
+decided by an Azure role. Before this change the cluster had local accounts,
+so anyone allowed to fetch the credentials had full admin rights, including
+the "read-only" plan identity (the `azurerm` provider fetches the credentials
+while refreshing).
+
+The Kubernetes objects are split into two layers:
+
+| Layer | Objects | Applied by |
+|---|---|---|
+| Platform (`k8s-manifests/platform.yaml`) | namespace, service accounts, Key Vault binding (SecretProviderClass), network policies | the apply identity, after approval (or an admin) |
+| App (`k8s-manifests/app.yaml`) | ConfigMap, Deployment, HPA, Service, Ingress, schema job | the deploy identity, on every push to `main` |
+
+Security-relevant objects change rarely and go through the same approval as
+Terraform. The app changes often, but cannot change the security rules. The
+deploy identity uses a custom role, *LearningSteps App Deployer*, instead of
+the built-in *RBAC Writer*, which would also allow reading Secrets, changing
+network policies and service accounts, and `exec` into pods.
+
+Checked with `kubectl auth can-i` for each identity:
+
+| Permission | you | deploy | apply | plan |
+|---|---|---|---|---|
+| Change Deployment, HPA, Job, ConfigMap, Ingress; read pods and logs | yes | yes | yes | no |
+| Read Secrets (database URL) | yes | **no** | yes | no |
+| Delete a NetworkPolicy | yes | **no** | yes | no |
+| Change ServiceAccount or SecretProviderClass | yes | **no** | yes | no |
+| `exec` into a pod | yes | **no** | yes | no |
+| Create namespaces, anything in `kube-system`, create RoleBindings | yes | **no** | yes | no |
+
+`az aks get-credentials --admin` is rejected (`BadRequest`). Break-glass
+access remains with the subscription Owner, who can assign the cluster admin
+role or re-enable local accounts with Azure commands; the Entra ID integration
+itself cannot be switched off again.
 
 ### Remote state
 
@@ -696,8 +725,6 @@ planned, at the latest when Terraform runs in a pipeline.
 
 - HTTPS on the ingress (DNS zone + certificate). Until then the API is served
   over plain HTTP on the ingress IP, like in iteration 1.
-- AKS with Entra ID integration and local accounts disabled (see the
-  limitation in *CI/CD Pipeline*)
 - Network Security Groups between the subnets
 - `prevent_destroy` on the database once it holds real data
 - Private endpoint for Key Vault
@@ -732,9 +759,10 @@ planned, at the latest when Terraform runs in a pipeline.
 │   ├── github.tf             Permissions of the pipeline identity
 │   └── outputs.tf            Values for the Kubernetes manifests
 ├── k8s-manifests/
-│   ├── app.yaml              Namespace, ServiceAccounts, SecretProviderClass,
-│   │                         ConfigMap, Deployment, HPA, Service, Ingress,
-│   │                         NetworkPolicies (with placeholders)
+│   ├── platform.yaml         Namespace, ServiceAccounts, SecretProviderClass,
+│   │                         NetworkPolicies (applied after approval)
+│   ├── app.yaml              ConfigMap, Deployment, HPA, Service, Ingress
+│   │                         (applied by the deploy identity)
 │   ├── db-init.yaml          One-off Job that creates the database schema
 │   └── deploy.sh             Fills the placeholders and applies to the cluster
 ├── .github/workflows/
@@ -807,7 +835,8 @@ and its data.
 Some Terraform outputs change on every rebuild: the app identity gets a new
 client ID from Azure, and Key Vault and registry get a new random name suffix.
 The manifests therefore contain placeholders such as `${APP_IDENTITY_CLIENT_ID}`
-instead of fixed values.
+instead of fixed values. The cluster uses Entra ID sign-in, so `kubelogin`
+(`brew install Azure/kubelogin/kubelogin`) is needed next to `kubectl`.
 
 `k8s-manifests/deploy.sh` reads the current values with `terraform output`,
 fills them in with `envsubst` and pipes the result straight into
@@ -815,8 +844,9 @@ fills them in with `envsubst` and pipes the result straight into
 go stale or end up in Git by accident.
 
 ```bash
-./k8s-manifests/deploy.sh --dry-run   # print the filled-in manifest only
-./k8s-manifests/deploy.sh             # connect kubectl to the cluster and apply
+./k8s-manifests/deploy.sh --dry-run   # print both filled-in manifests only
+./k8s-manifests/deploy.sh --platform  # platform layer (needs cluster admin)
+./k8s-manifests/deploy.sh             # app layer
 ./k8s-manifests/deploy.sh --db-init   # once after every rebuild: create the schema
 ./k8s-manifests/deploy.sh --seed      # demo entries, only if the database is empty
 ```

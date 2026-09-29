@@ -483,6 +483,50 @@ approving shortly after reading the summary keeps the two close.
 
 ---
 
+## Monitoring (optional part of the brief)
+
+Prometheus and Grafana run **inside the cluster**, as the brief asks, installed
+with the Helm chart *kube-prometheus-stack* (pinned version) as part of the
+platform layer, so a change goes through the same approval as Terraform.
+
+**Metrics from the app** (`app/metrics.py`, `prometheus_client`):
+
+| Metric | Type | For |
+|---|---|---|
+| `http_requests_total{method, path, status}` | counter | request volume, error rate |
+| `http_request_duration_seconds{method, path}` | histogram | latency (p50/p95/p99) |
+| `db_up`, `db_check_duration_seconds` | gauge | database health (`SELECT 1` every 15 s in the background) |
+| `db_pool_connections{state}` | gauge | open and idle connections of the pool |
+
+- The `path` label is the **route template** (`/entries/{entry_id}`), not the
+  URL: one time series per entry ID would overload Prometheus. A test checks
+  that no ID appears in the metrics.
+- Metrics are served on a **separate port (9000)**. The ingress only forwards
+  the API port, so `/metrics` is not reachable from the internet, and a
+  NetworkPolicy allows only Prometheus to reach port 9000.
+
+**Setup** (`k8s-manifests/monitoring/`): no Alertmanager (no alerting in this
+project); components AKS manages itself (etcd, scheduler, controller manager)
+and kube-proxy (replaced by Cilium) are not scraped, so there are no permanently
+failing targets; Prometheus keeps 7 days on a 5 GB disk, because the cluster
+is stopped every night; the app is found through a `PodMonitor`.
+
+**Grafana** is not exposed through the ingress and has no password in the
+repository (the chart generates one into a Kubernetes Secret, readable by
+cluster admins only). The dashboard *LearningSteps API* is stored as JSON in
+the repository and provisioned automatically: requests per second, share of
+5xx, database up/down, number of API pods, request volume per route and
+status, latency percentiles, database check duration, connection pool, CPU per
+pod and HPA replicas.
+
+```bash
+kubectl port-forward -n monitoring svc/monitoring-grafana 3000:80
+kubectl get secret -n monitoring monitoring-grafana -o jsonpath='{.data.admin-password}' | base64 -d
+# http://localhost:3000, user admin
+```
+
+---
+
 ## Security Decisions
 
 ### The database is private by design
@@ -722,10 +766,10 @@ planned, at the latest when Terraform runs in a pipeline.
 
 ## Next Steps
 
-- *(optional, in progress)* Monitoring: Prometheus and Grafana **inside the
-  cluster** (as the brief asks), `prometheus_client` in the app serving
-  `/metrics` on a separate port that the ingress does not expose, dashboard for
-  request volume, latency and database health
+- *(optional, in progress)* Monitoring: deploy through the pipeline, verify
+  the dashboard under load
+- *(possible)* HTTPS with a free Azure DNS name for the ingress IP and
+  cert-manager with Let's Encrypt
 
 ### Hardening (out of scope for now)
 
@@ -775,6 +819,7 @@ planned, at the latest when Terraform runs in a pipeline.
 │   │                         NetworkPolicies (applied after approval)
 │   ├── app.yaml              ConfigMap, Deployment, HPA, Service, Ingress
 │   │                         (applied by the deploy identity)
+│   ├── monitoring/           Prometheus/Grafana settings, PodMonitor, dashboard
 │   ├── db-init.yaml          One-off Job that creates the database schema
 │   └── deploy.sh             Fills the placeholders and applies to the cluster
 ├── .github/workflows/

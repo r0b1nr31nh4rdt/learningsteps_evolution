@@ -18,6 +18,8 @@ ROOT = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(ROOT / "app"))
 sys.path.insert(0, str(ROOT / "scripts"))
 os.environ.setdefault("DATABASE_URL", "postgresql://postgres:test@localhost:5432/learning_journal")
+# The tests start the app many times; the metrics port could only be bound once.
+os.environ["METRICS_PORT"] = "0"
 
 from main import app  # noqa: E402  (needs the path and DATABASE_URL above)
 

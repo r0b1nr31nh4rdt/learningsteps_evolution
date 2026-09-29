@@ -1,0 +1,87 @@
+# Settings for the Helm chart kube-prometheus-stack (version pinned in
+# deploy.sh). Part of the platform layer: installed after approval by the
+# pipeline's apply identity, or by an admin with ./k8s-manifests/deploy.sh --platform
+
+# No alerting in this project; saves resources on the small nodes.
+alertmanager:
+  enabled: false
+
+# Components AKS runs itself (not reachable from inside the cluster), and
+# kube-proxy, which Cilium replaces. Scraping them would only show failing
+# targets.
+kubeEtcd:
+  enabled: false
+kubeControllerManager:
+  enabled: false
+kubeScheduler:
+  enabled: false
+kubeProxy:
+  enabled: false
+defaultRules:
+  rules:
+    etcd: false
+    kubeControllerManager: false
+    kubeSchedulerAlerting: false
+    kubeSchedulerRecording: false
+    kubeProxy: false
+
+prometheus:
+  prometheusSpec:
+    # Also pick up PodMonitors that were not created by this Helm release
+    # (our app's PodMonitor in k8s-manifests/monitoring/podmonitor.yaml).
+    podMonitorSelectorNilUsesHelmValues: false
+    serviceMonitorSelectorNilUsesHelmValues: false
+    retention: 7d
+    retentionSize: 4GB
+    resources:
+      requests:
+        cpu: 100m
+        memory: 512Mi
+      limits:
+        memory: 1Gi
+    # A disk, so the data survives restarts (the cluster is stopped every night).
+    storageSpec:
+      volumeClaimTemplate:
+        spec:
+          storageClassName: managed-csi
+          accessModes: ["ReadWriteOnce"]
+          resources:
+            requests:
+              storage: 5Gi
+
+grafana:
+  # No adminPassword here: the chart generates a random one and stores it in
+  # the Kubernetes Secret "monitoring-grafana" (readable by cluster admins only).
+  # Not exposed through the ingress; reach it with kubectl port-forward.
+  persistence:
+    enabled: false          # dashboards come from Git (ConfigMaps), not from a disk
+  resources:
+    requests:
+      cpu: 50m
+      memory: 128Mi
+    limits:
+      memory: 256Mi
+
+prometheusOperator:
+  resources:
+    requests:
+      cpu: 50m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+kube-state-metrics:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 64Mi
+    limits:
+      memory: 256Mi
+
+prometheus-node-exporter:
+  resources:
+    requests:
+      cpu: 20m
+      memory: 32Mi
+    limits:
+      memory: 128Mi

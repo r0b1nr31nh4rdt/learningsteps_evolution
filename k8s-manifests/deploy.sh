@@ -22,6 +22,9 @@
 set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "$0")" && pwd)"
+# Helm chart for Prometheus + Grafana. Pinned: a new chart version is a
+# deliberate change (it changes what runs in the cluster).
+MONITORING_CHART_VERSION="91.8.1"
 TF_DIR="$SCRIPT_DIR/../infra-terraform"
 
 tf_output() {
@@ -121,6 +124,22 @@ wait_for_permission() {
 if [[ "${1:-}" == "--platform" ]]; then
   wait_for_permission create namespaces
   envsubst "$PLACEHOLDERS" < "$SCRIPT_DIR/platform.yaml" | kubectl apply -f -
+
+  # Monitoring: Prometheus and Grafana (Helm chart, pinned version), then the
+  # objects that need its resource types (PodMonitor) or its namespace.
+  helm repo add prometheus-community https://prometheus-community.github.io/helm-charts --force-update >/dev/null
+  helm upgrade --install monitoring prometheus-community/kube-prometheus-stack \
+    --version "$MONITORING_CHART_VERSION" \
+    --namespace monitoring --create-namespace \
+    --values "$SCRIPT_DIR/monitoring/values.yaml" \
+    --wait --timeout 10m
+  kubectl apply -f "$SCRIPT_DIR/monitoring/podmonitor.yaml"
+  # Grafana loads every ConfigMap with the label grafana_dashboard=1.
+  kubectl create configmap dashboard-learningsteps -n monitoring \
+    --from-file=learningsteps.json="$SCRIPT_DIR/monitoring/dashboard-learningsteps.json" \
+    --dry-run=client -o yaml \
+    | kubectl label --local -f - grafana_dashboard=1 -o yaml \
+    | kubectl apply -f -
   exit 0
 fi
 

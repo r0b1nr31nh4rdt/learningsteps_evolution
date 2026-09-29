@@ -12,7 +12,7 @@
 # Push to main:  everything. terraform-apply waits for a manual approval in the
 #                GitHub environment "infrastructure" and only runs when the
 #                Terraform plan has changes or the Kubernetes platform layer
-#                (k8s-manifests/platform.yaml) changed.
+#                (k8s-manifests/platform.yaml, k8s-manifests/monitoring/) changed.
 #
 # Azure sign-in uses OIDC (no stored password) with three identities from
 # infra-bootstrap/, each allowed only what its job needs:
@@ -153,8 +153,8 @@ jobs:
       - name: Platform layer changed?
         id: platform
         # The platform layer (namespace, service accounts, Key Vault binding,
-        # network policies) is applied by terraform-apply, so a change to it
-        # needs the approval too. A manual run always re-applies it.
+        # network policies, monitoring) is applied by terraform-apply, so a
+        # change to it needs the approval too. A manual run always re-applies it.
         working-directory: ${{ github.workspace }}
         env:
           BEFORE: ${{ github.event.before }}
@@ -167,7 +167,7 @@ jobs:
           esac
           # exit code 0 = unchanged; anything else (changed, or history not
           # comparable) counts as changed
-          if git diff --quiet "$range" -- k8s-manifests/platform.yaml; then
+          if git diff --quiet "$range" -- k8s-manifests/platform.yaml k8s-manifests/monitoring/; then
             echo "changed=false" >> "$GITHUB_OUTPUT"
           else
             echo "changed=true" >> "$GITHUB_OUTPUT"

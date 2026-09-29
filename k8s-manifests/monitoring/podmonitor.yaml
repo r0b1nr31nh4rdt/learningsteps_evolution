@@ -1,0 +1,15 @@
+# Tells Prometheus where the app's metrics are: port "metrics" (9000) of every
+# pod with the label app: learningsteps-api. Needs the PodMonitor type, which
+# the kube-prometheus-stack chart installs, so it is applied after Helm.
+apiVersion: monitoring.coreos.com/v1
+kind: PodMonitor
+metadata:
+  name: learningsteps-api
+  namespace: learningsteps
+spec:
+  selector:
+    matchLabels:
+      app: learningsteps-api
+  podMetricsEndpoints:
+    - port: metrics
+      interval: 15s

@@ -78,7 +78,10 @@ spec:
         - name: api
           image: "${ACR_LOGIN_SERVER}/learningsteps-api:${IMAGE_TAG}"
           ports:
-            - containerPort: 8000
+            - name: http
+              containerPort: 8000
+            - name: metrics           # Prometheus metrics, see app/metrics.py
+              containerPort: 9000
           # All keys of the ConfigMap become environment variables.
           envFrom:
             - configMapRef:

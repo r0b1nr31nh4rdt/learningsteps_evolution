@@ -7,5 +7,5 @@ COPY app/ .
 # verify runAsNonRoot without looking up the name.
 RUN useradd --uid 10001 --no-create-home --shell /usr/sbin/nologin appuser
 USER 10001
-EXPOSE 8000
+EXPOSE 8000 9000
 CMD ["uvicorn", "main:app", "--host", "0.0.0.0", "--port", "8000"]

@@ -104,6 +104,31 @@ spec:
         - protocol: TCP
           port: 8000
 ---
+# 2b. Incoming: Prometheus may read the metrics port (9000), nothing else.
+#     The ingress does not know this port, so it is not reachable from outside.
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: api-allow-metrics-from-prometheus
+  namespace: learningsteps
+spec:
+  podSelector:
+    matchLabels:
+      app: learningsteps-api
+  policyTypes:
+    - Ingress
+  ingress:
+    - from:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: monitoring
+          podSelector:
+            matchLabels:
+              app.kubernetes.io/name: prometheus
+      ports:
+        - protocol: TCP
+          port: 9000
+---
 # 3. Outgoing: API and schema job may only resolve names (DNS) and talk to
 #    PostgreSQL. Everything else is blocked, including the internet and the
 #    node's IMDS endpoint (169.254.169.254), which would hand out a token of

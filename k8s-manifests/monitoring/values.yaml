@@ -55,12 +55,14 @@ grafana:
   # Not exposed through the ingress; reach it with kubectl port-forward.
   persistence:
     enabled: false          # dashboards come from Git (ConfigMaps), not from a disk
+  # 256Mi was too little: Grafana 13 used 224Mi idle and was OOMKilled when
+  # the dashboard was opened (2026-10-01).
   resources:
     requests:
       cpu: 50m
-      memory: 128Mi
-    limits:
       memory: 256Mi
+    limits:
+      memory: 512Mi
 
 prometheusOperator:
   resources:

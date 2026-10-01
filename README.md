@@ -762,6 +762,12 @@ planned, at the latest when Terraform runs in a pipeline.
   being removed. Since then `terraform plan` right after `apply` reports
   *No changes*.
 
+- **Grafana killed for lack of memory.** The first port-forward to Grafana
+  broke with `lost connection to pod`. The tunnel was not the cause: the
+  Grafana container had been `OOMKilled`, because it already used 224 MiB
+  idle and its limit was 256 MiB. The limit was raised to 512 MiB (request
+  256 MiB), through the pipeline with approval like any platform change.
+
 - **vCPU quota.** VMs from iteration 1 still counted against the vCPU quota
   in `germanywestcentral`. This no longer matters after the move to
   `westeurope`, but they should be deallocated or deleted to save cost.

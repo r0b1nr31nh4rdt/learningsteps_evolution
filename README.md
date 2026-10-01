@@ -358,7 +358,11 @@ Every scan fails the run on **High** or **Critical**. The infrastructure is
 changed before the app is deployed, so a push that needs new infrastructure
 and uses it in the same change works in one run. If the plan shows no
 changes, approval and apply are skipped. GitHub notifies the reviewer by email
-and in the GitHub Mobile app, where the deployment can also be approved.
+and in the GitHub Mobile app, where the deployment can also be approved. The
+approval comment is stored with the run as evidence of what was reviewed.
+In a team, the environment's *Prevent self-review* setting would enforce
+separation of duties (the author of a change cannot approve it); in a
+one-person project this is not possible.
 
 ### The approval in practice
 

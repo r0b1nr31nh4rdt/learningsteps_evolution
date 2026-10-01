@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Fills an empty LearningSteps database with 5 demo entries (fixed ones plus random ones).
+"""Fills an empty LearningSteps database with 5 random demo entries.
 
 Runs against the public API, not the database: the database is only
 reachable from inside the VNet, the API from anywhere (laptop, pipeline).
@@ -24,14 +24,7 @@ import urllib.request
 NUMBER_OF_ENTRIES = 5
 WAIT_FOR_API_SECONDS = 180
 
-# Always created, so they survive every rebuild of the database.
-PINNED_ENTRIES = [
-    ("Completed the K8s LAN Party (Wiz) Kubernetes security CTF: https://k8slanparty.com/certificate/VAUi7WX3",
-     "Thinking like an attacker inside a cluster: DNS recon, reaching other pods, getting around network boundaries",
-     "Check my own NetworkPolicies against what I learned and switch AKS to Entra ID"),
-]
-
-# Pool of demo entries; the rest up to NUMBER_OF_ENTRIES is picked at random.
+# Pool of demo entries; each run picks NUMBER_OF_ENTRIES of them at random.
 DEMO_ENTRIES = [
     ("Wrote the Terraform files for VNet, AKS, PostgreSQL and Key Vault",
      "PostgreSQL Flexible Server was blocked in my first region",
@@ -115,9 +108,8 @@ def main():
         print(f"Database already has {count} entries, nothing to seed.")
         return
 
-    entries = PINNED_ENTRIES + random.sample(DEMO_ENTRIES, NUMBER_OF_ENTRIES - len(PINNED_ENTRIES))
-    print(f"Database is empty, creating {len(entries)} demo entries:")
-    for work, struggle, intention in entries:
+    print(f"Database is empty, creating {NUMBER_OF_ENTRIES} demo entries:")
+    for work, struggle, intention in random.sample(DEMO_ENTRIES, NUMBER_OF_ENTRIES):
         entry = request("POST", f"{base_url}/entries",
                         {"work": work, "struggle": struggle, "intention": intention})["entry"]
         print(f"  {entry['id']}  {work}")

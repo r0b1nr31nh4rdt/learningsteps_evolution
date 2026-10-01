@@ -9,12 +9,13 @@ This is the second iteration of the project. The first one
 ([learningsteps-azure-infra](https://github.com/r0b1nr31nh4rdt/learningsteps-azure-infra))
 ran the app on two VMs provisioned with Azure CLI commands.
 
-> **Status: work in progress.** The Terraform configuration is written and
-> has been destroyed and re-applied successfully, the app runs on AKS with
+> **Status: complete.** The Terraform configuration has been destroyed and
+> re-applied successfully, the app runs on AKS with
 > its database schema, and all CRUD operations work. The CI/CD pipeline
 > (checks, Terraform plan/approval/apply, build, scan, push, deploy) runs
 > green end to end, including a full rebuild from nothing (2026-09-28). All
-> required success criteria of the brief are met; see *Verification*.
+> required success criteria of the brief are met, and the optional monitoring
+> part is implemented; see *Verification* and *Known Limitations*.
 
 ---
 
@@ -784,12 +785,22 @@ planned, at the latest when Terraform runs in a pipeline.
 
 ---
 
-## Next Steps
+## Known Limitations
 
-- *(optional, in progress)* Monitoring: deploy through the pipeline, verify
-  the dashboard under load
-- *(possible)* HTTPS with a free Azure DNS name for the ingress IP and
-  cert-manager with Let's Encrypt
+- **No authentication.** The API comes from the original repository without
+  any sign-in: anyone who knows the address can read, change and delete
+  entries, including `DELETE /entries`, which deletes all of them. Acceptable
+  for a course project with demo data, not for real data. The natural next
+  step would be sign-in with Microsoft Entra ID (OIDC): the API validates the
+  token on every request and stores entries per user. Self-built accounts with
+  passwords in the database were deliberately not considered (password
+  storage, resets, brute-force protection).
+- **HTTP only.** The API is served over plain HTTP on the ingress IP. HTTPS
+  needs a host name: either an own domain in an Azure DNS zone or the free
+  `*.cloudapp.azure.com` name of the public IP, with certificates from Let's
+  Encrypt via cert-manager.
+- **Grafana only through `kubectl port-forward`.** Exposing it would need
+  HTTPS and, ideally, sign-in with Entra ID instead of the admin password.
 
 ### Hardening (out of scope for now)
 
@@ -1007,7 +1018,7 @@ state, bootstrap-owned resource group, Terraform in the pipeline), on
 | API pods | 2 `Running`, one per node |
 | Image | from the new registry, tagged with the commit SHA |
 | Schema job | `Completed` |
-| Data | 5 entries: the pinned entry plus 4 random demo entries |
+| Data | 5 demo entries created by the seed script |
 | `terraform plan` from the laptop | *No changes*: what the pipeline built matches the code |
 
 The public IP changes with every rebuild (it belongs to the load balancer

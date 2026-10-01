@@ -24,12 +24,6 @@ def test_seed_fills_empty_database(client, seed):
     assert len({e["work"] for e in entries}) == len(entries)   # no duplicates
 
 
-def test_seed_always_includes_pinned_entries(client, seed):
-    seed()
-    works = {e["work"] for e in client.get("/entries").json()["entries"]}
-    assert {work for work, _, _ in seed_demo_data.PINNED_ENTRIES} <= works
-
-
 def test_seed_leaves_existing_data_alone(client, entry, seed):
     seed()
     assert client.get("/entries").json()["count"] == 1

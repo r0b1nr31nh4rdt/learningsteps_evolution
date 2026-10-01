@@ -778,6 +778,7 @@ planned, at the latest when Terraform runs in a pipeline.
   waiting for the upstream rebuild; afterwards 0 fixable High/Critical. The
   infrastructure part of that run (the Grafana memory fix) had already been
   applied, because apply runs before the build.
+  ([screenshot](screenshots/pipeline-image-scan-blocked.png))
 
 - **vCPU quota.** VMs from iteration 1 still counted against the vCPU quota
   in `germanywestcentral`. This no longer matters after the move to

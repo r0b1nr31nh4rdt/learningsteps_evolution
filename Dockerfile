@@ -1,5 +1,12 @@
 FROM python:3.12-slim
 WORKDIR /api
+# Install the latest Debian security fixes. The official Python image is only
+# rebuilt now and then; without this, fixed vulnerabilities in the base image
+# (e.g. OpenSSL) stay in our image until the next upstream rebuild, and the
+# image scan in the pipeline stops the release.
+RUN apt-get update \
+    && apt-get upgrade -y --no-install-recommends \
+    && rm -rf /var/lib/apt/lists/*
 COPY app/requirements.txt .
 RUN pip install --no-cache-dir -r requirements.txt
 COPY app/ .

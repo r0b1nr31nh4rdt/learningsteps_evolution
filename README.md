@@ -768,6 +768,16 @@ planned, at the latest when Terraform runs in a pipeline.
   idle and its limit was 256 MiB. The limit was raised to 512 MiB (request
   256 MiB), through the pipeline with approval like any platform change.
 
+- **The image scan stopped a release, as intended.** On 2026-10-01 Debian
+  published fixes for new HIGH vulnerabilities in OpenSSL and PCRE2. The
+  official `python:3.12-slim` image had not been rebuilt with them yet, so
+  `trivy image` found 7 fixable HIGH vulnerabilities and the pipeline did not
+  push the image. The Dockerfile now installs the Debian security updates
+  during the build (`apt-get upgrade`), so fixes reach the image without
+  waiting for the upstream rebuild; afterwards 0 fixable High/Critical. The
+  infrastructure part of that run (the Grafana memory fix) had already been
+  applied, because apply runs before the build.
+
 - **vCPU quota.** VMs from iteration 1 still counted against the vCPU quota
   in `germanywestcentral`. This no longer matters after the move to
   `westeurope`, but they should be deallocated or deleted to save cost.
@@ -788,8 +798,10 @@ planned, at the latest when Terraform runs in a pipeline.
 - Private AKS cluster, private endpoints for Key Vault and the state storage,
   and a self-hosted runner inside the VNet. This would resolve all three
   accepted risks in `.trivyignore.yaml` (expiry 2026-12-31).
-- Smaller base image (for example distroless) to reduce the 44 unfixable
-  vulnerabilities of the Debian base image
+- Smaller base image (for example distroless) to reduce the number of
+  unfixable vulnerabilities of the Debian base image
+- A scheduled pipeline run (e.g. weekly) that rebuilds and rescans the image,
+  so new vulnerabilities are found even when no code changes
 - Nodes in several availability zones (currently only zone 3 has capacity for
   the VM size in this subscription)
 - Network Security Groups between the subnets
